@@ -103,6 +103,12 @@ ENV LOG_LEVEL=INFO TZ=Asia/Ho_Chi_Minh
 EXPOSE 1994
 ENTRYPOINT ["/code-nim"]
 ```
+And Command
 
+```
+docker run -d --name code-nim -e LOG_LEVEL=INFO -e TZ=Asia/Ho_Chi_Minh -v /home/docker/code_nim/review-config.yaml:/go/src/code_nim/config_file/review-config.yaml --restart unless-stopped mrnim94/code_nim:latest
+```
 ### License
 Apache License 2.0. See `LICENSE`.
+
+
