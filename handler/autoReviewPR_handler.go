@@ -106,13 +106,14 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 			if len(filteredComments) > 0 {
 				fmt.Printf("Comments: %+v\n", filteredComments)
 				for _, comment := range filteredComments {
+					decoratedBody := fmt.Sprintf("File: %s (line %d)\n\n%s", comment.Path, comment.Position, comment.Body)
 					err := ar.Bitbucket.PushPullRequestComment(
 						pullRequest.ID,
 						auto.Workspace,
 						auto.RepoSlug,
 						auto.Username,
 						auto.AppPassword,
-						comment.Body,
+						decoratedBody,
 					)
 					if err != nil {
 						log.Errorf("Failed to post comment: %v", err)
