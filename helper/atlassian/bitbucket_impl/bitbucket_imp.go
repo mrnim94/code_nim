@@ -112,7 +112,7 @@ func (hc *HttpClient) ParseDiff(diff string) []map[string]interface{} {
 			currentFile = map[string]interface{}{"path": "", "hunks": []map[string]interface{}{}}
 		} else if strings.HasPrefix(line, "+++ b/") {
 			if currentFile != nil {
-				currentFile["path"] = strings.TrimPrefix(line, "+ b/")
+				currentFile["path"] = strings.TrimPrefix(line, "+++ b/")
 			}
 		} else if strings.HasPrefix(line, "@@") {
 			if currentFile != nil {
@@ -221,4 +221,49 @@ func (hc *HttpClient) PushPullRequestComment(prID int, workspace, repoSlug, user
 
 	log.Debug("Comment posted successfully")
 	return nil
+}
+
+// PushPullRequestInlineComment posts a comment on a specific file and destination line in the PR
+func (hc *HttpClient) PushPullRequestInlineComment(prID int, workspace, repoSlug, username, appPassword, path string, line int, content string) error {
+    apiURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/comments", workspace, repoSlug, prID)
+    log.Debugf("Posting inline comment to URL: %s", apiURL)
+
+    payload := map[string]interface{}{
+        "content": map[string]string{
+            "raw": content,
+        },
+        "inline": map[string]interface{}{
+            "path": path,
+            "to":   line, // destination line in the diff
+        },
+    }
+    body, err := json.Marshal(payload)
+    if err != nil {
+        log.Error(err)
+        return err
+    }
+
+    req, err := http.NewRequest("POST", apiURL, strings.NewReader(string(body)))
+    if err != nil {
+        log.Error(err)
+        return err
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.SetBasicAuth(username, appPassword)
+
+    resp, err := hc.http.Do(req)
+    if err != nil {
+        log.Error(err)
+        return err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != 201 {
+        rawBody, _ := io.ReadAll(resp.Body)
+        log.Errorf("Failed to post inline comment. Status: %d, Body: %s", resp.StatusCode, string(rawBody))
+        return fmt.Errorf("failed to post inline comment, status: %d", resp.StatusCode)
+    }
+
+    log.Debug("Inline comment posted successfully")
+    return nil
 }

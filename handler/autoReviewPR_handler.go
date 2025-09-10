@@ -7,6 +7,8 @@ import (
 	"code_nim/model"
 	"fmt"
 	"github.com/go-co-op/gocron"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -72,11 +74,7 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 				filePath := file["path"].(string)
 				log.Debugf("Check File path %s", filePath)
 				hunks := file["hunks"].([]map[string]interface{})
-				var allLines []string
-				for _, hunk := range hunks {
-					lines := hunk["lines"].([]string)
-					allLines = append(allLines, lines...)
-				}
+				allLines, toLineMap := buildDiffSnippetAndLineMap(hunks)
 				if len(allLines) == 0 {
 					continue
 				}
@@ -87,7 +85,21 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 					continue
 				}
 				for i := range comments {
+					// Map AI diff index (1-based within provided snippet) to destination file line
+					if comments[i].Position <= 0 || comments[i].Position > len(toLineMap) {
+						log.Debugf("Skip comment with out-of-range position %d for file %s", comments[i].Position, filePath)
+						comments[i].Position = 0
+						continue
+					}
+					mapped := toLineMap[comments[i].Position-1]
+					if mapped <= 0 {
+						// Deleted lines have no destination; skip
+						log.Debugf("Skip comment on deleted line (no destination) at diff idx %d for file %s", comments[i].Position, filePath)
+						comments[i].Position = 0
+						continue
+					}
 					comments[i].Path = filePath
+					comments[i].Position = mapped
 				}
 				allComments = append(allComments, comments...)
 			}
@@ -106,17 +118,21 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 			if len(filteredComments) > 0 {
 				fmt.Printf("Comments: %+v\n", filteredComments)
 				for _, comment := range filteredComments {
-					decoratedBody := fmt.Sprintf("File: %s (line %d)\n\n%s", comment.Path, comment.Position, comment.Body)
-					err := ar.Bitbucket.PushPullRequestComment(
+					if comment.Path == "" || comment.Position <= 0 {
+						continue
+					}
+					err := ar.Bitbucket.PushPullRequestInlineComment(
 						pullRequest.ID,
 						auto.Workspace,
 						auto.RepoSlug,
 						auto.Username,
 						auto.AppPassword,
-						decoratedBody,
+						comment.Path,
+						comment.Position,
+						comment.Body,
 					)
 					if err != nil {
-						log.Errorf("Failed to post comment: %v", err)
+						log.Errorf("Failed to post inline comment: %v", err)
 					}
 				}
 			}
@@ -146,4 +162,54 @@ func looksLikeCommand(body string) bool {
 		}
 	}
 	return false
+}
+
+// buildDiffSnippetAndLineMap flattens hunks for the AI prompt and builds a mapping
+// from snippet index (1-based in AI output) to destination file line (to-line).
+// For lines not present on destination (deleted '-' lines), the map value is <= 0.
+func buildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []int) {
+    var snippet []string
+    var toLineMap []int
+    for _, h := range hunks {
+        header, _ := h["header"].(string)
+        lines, _ := h["lines"].([]string)
+        // Parse header like: @@ -a,b +c,d @@
+        // Extract c (start line on destination)
+        destStart := 0
+        if parts := strings.Split(header, "+"); len(parts) > 1 {
+            // parts[1] like: c,d @@ ...
+            right := parts[1]
+            // trim up to first space or '@'
+            if idx := strings.IndexAny(right, " @"); idx >= 0 {
+                right = right[:idx]
+            }
+            if idx := strings.Index(right, ","); idx >= 0 {
+                right = right[:idx]
+            }
+            if v, err := strconv.Atoi(strings.TrimSpace(right)); err == nil {
+                destStart = v
+            }
+        }
+        destLine := destStart
+        for _, ln := range lines {
+            snippet = append(snippet, ln)
+            if strings.HasPrefix(ln, "+") || (!strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "-")) {
+                // added or context line advances destination
+                if strings.HasPrefix(ln, "+") {
+                    toLineMap = append(toLineMap, destLine)
+                    destLine++
+                } else {
+                    // context line
+                    toLineMap = append(toLineMap, destLine)
+                    destLine++
+                }
+            } else if strings.HasPrefix(ln, "-") {
+                // removed line: no destination line
+                toLineMap = append(toLineMap, -1)
+            } else {
+                toLineMap = append(toLineMap, -1)
+            }
+        }
+    }
+    return snippet, toLineMap
 }

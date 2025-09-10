@@ -11,46 +11,36 @@ import (
 
 func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) string {
 	log.Debugf("Begin to Create Prompt for PR: %d", pr.ID)
-	return fmt.Sprintf(`You are an expert code reviewer. Produce concise, actionable feedback that is specific, not generic.
+	return fmt.Sprintf(`You are an expert code reviewer. Please follow these instructions carefully:
 
-STRICT OUTPUT FORMAT
-- Return ONLY valid JSON: {"reviews": [{"lineNumber": <int>, "reviewComment": "<markdown>"}]}
-- No extra text before/after JSON. Do not wrap JSON in code fences.
+- Provide your feedback strictly in the following JSON format:
+  {"reviews": [{"lineNumber": <diff_line_index>, "reviewComment": "<comment>"}]}
 
-SCOPE AND STYLE
-- Review ONLY the diff for file "%s" in the context of the PR title and description.
-- Focus on correctness, security, performance, readability, maintainability, and edge cases.
-- If no meaningful improvement exists, return {"reviews": []}.
-- Do not suggest adding comments to code. Avoid generic praise.
+- Review the unified diff for file "%s" below. The lineNumber refers to the 1-based index of the displayed diff lines (including context and +/- lines). Do not use absolute file line numbers.
+- Focus your comments on code quality, bugs, logic errors, security, performance, and best practices.
+- Maybe Refactor the following code to improve readability, maintainability, and efficiency. Please ensure the logic remains unchanged.
+- Use clear, concise GitHub Markdown in your comments.
+- ONLY provide feedback if improvements are necessary; if the code is optimal, return an empty "reviews" array.
+- IMPORTANT: Do NOT suggest adding comments to the code.
+- Assess whether the changes align with the pull request's title and description.
+- If the PR is too large, suggest breaking it down; if very small, ensure the change is meaningful.
+- If the diff is overly extensive, explicitly mention that it's too large for effective review.
 
-REVIEW ITEM REQUIREMENTS
-Each review object's "reviewComment" must include:
-1) [Severity: Low|Medium|High] One-line summary
-2) Evidence: quote the exact changed line(s) or a tiny snippet from the diff (use inline code markers)
-3) Why: concrete risk/impact (bug, security risk, performance, maintainability)
-4) Fix: a specific change (a minimal diff-like snippet or concise replacement)
-5) Optional: brief reference (standard/best-practice) if truly helpful
+Examples of review comments:
+- Good: {"lineNumber": 42, "reviewComment": "Potential nil pointer dereference. Please check if 'user' is nil before accessing its fields."}
+- Good: {"lineNumber": 10, "reviewComment": "Consider using a constant for the retry interval to improve maintainability."}
+- Good: {"lineNumber": 27, "reviewComment": "The replica count 2 for scaling up in the update-envs step is hardcoded. Consider making this a parameter (e.g., target_replicas) to provide more flexibility and reusability for the workflow, allowing different target replica counts without modifying the workflow definition."}
+- Bad: {"lineNumber": 5, "reviewComment": "Add more comments to the code."} (Do NOT suggest this)
+- Bad: {"lineNumber": 12, "reviewComment": "Looks fine."} (Be specific and actionable)
 
-ADDITIONAL RULES
-- Choose "lineNumber" as the most relevant changed line for the issue.
-- Only include reviews that contain BOTH Evidence and Fix; otherwise omit the review.
-- Keep each review under ~120 words and prefer minimal snippets.
-- If the diff is too large to review effectively, return a single High severity item asking to split it logically.
+Pull Request Title: %s
 
-EXAMPLES (ILLUSTRATIVE)
-- Good: {"lineNumber": 42, "reviewComment": "[High] Possible nil dereference\n\nEvidence: access to user.Name after user := find(...) with no nil-check.\n\nWhy: may panic at runtime when find returns nil.\n\nFix: add guard:\nif user == nil { return errUserNotFound }\nname := user.Name"}
-- Good: {"lineNumber": 27, "reviewComment": "[Medium] Hardcoded replica count\n\nEvidence: replicas: 2 in deploy step.\n\nWhy: inflexible across environments.\n\nFix: parameterize via target_replicas input and default per env."}
-- Bad: {"lineNumber": 5, "reviewComment": "Looks fine"}
-- Bad: {"lineNumber": 12, "reviewComment": "Add comments for readability"}
-
-PR TITLE: %s
-
-PR DESCRIPTION:
+Pull Request Description:
 ---
 %s
 ---
 
-GIT DIFF TO REVIEW:
+Git Diff to Review:
 ---diff
 %s
 ---
