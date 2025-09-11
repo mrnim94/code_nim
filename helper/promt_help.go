@@ -14,9 +14,9 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
 	return fmt.Sprintf(`You are an expert code reviewer. Please follow these instructions carefully:
 
 - Provide your feedback strictly in the following JSON format:
-  {"reviews": [{"lineNumber": <diff_line_index>, "reviewComment": "<comment>"}]}
+  {"reviews": [{"lineNumber": <diff_line_index>, "lineText": "<exact line snippet>", "reviewComment": "<comment>"}]}
 
-- Review the unified diff for file "%s" below. The lineNumber refers to the 1-based index of the displayed diff lines (including context and +/- lines). Do not use absolute file line numbers.
+- Review the unified diff for file "%s" below. The lineNumber refers to the 1-based index of the displayed diff lines (including context and +/- lines). Do not use absolute file line numbers. Also include the exact line text (lineText) you are referring to from the diff to help anchor placement.
 - Focus your comments on code quality, bugs, logic errors, security, performance, and best practices.
 - Maybe Refactor the following code to improve readability, maintainability, and efficiency. Please ensure the logic remains unchanged.
 - Use clear, concise GitHub Markdown in your comments.
@@ -96,10 +96,12 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 	}
 	var comments []model.ReviewComment
 	for _, r := range respObj.Reviews {
+		anchor := strings.TrimSpace(r.LineText)
 		comments = append(comments, model.ReviewComment{
 			Body:     r.ReviewComment,
 			Path:     "", // to be filled by caller
 			Position: r.LineNumber,
+			Anchor:   anchor,
 		})
 	}
 	return comments, nil

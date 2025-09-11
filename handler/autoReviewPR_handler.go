@@ -85,6 +85,13 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 					continue
 				}
 				for i := range comments {
+					// Use anchor text to correct the index if present
+					if comments[i].Anchor != "" {
+						idx := nearestMatchingLineIndex(allLines, comments[i].Anchor, comments[i].Position-1)
+						if idx >= 0 && idx < len(toLineMap) {
+							comments[i].Position = idx + 1
+						}
+					}
 					// Map AI diff index (1-based within provided snippet) to destination file line
 					if comments[i].Position <= 0 || comments[i].Position > len(toLineMap) {
 						log.Debugf("Skip comment with out-of-range position %d for file %s", comments[i].Position, filePath)
@@ -212,4 +219,52 @@ func buildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []int
         }
     }
     return snippet, toLineMap
+}
+
+// nearestMatchingLineIndex finds the nearest index in diffLines whose content contains the anchor.
+// It searches first at the hinted index, then walks outward.
+func nearestMatchingLineIndex(diffLines []string, anchor string, hintIdx int) int {
+	if len(diffLines) == 0 || anchor == "" {
+		return -1
+	}
+	// Normalize anchor for comparison (trim and remove leading +/- for robustness)
+	normAnchor := strings.TrimSpace(anchor)
+	strip := func(s string) string {
+		s = strings.TrimSpace(s)
+		if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
+			return strings.TrimSpace(s[1:])
+		}
+		return s
+	}
+	normAnchor = strip(normAnchor)
+
+	inBounds := func(i int) bool { return i >= 0 && i < len(diffLines) }
+	match := func(i int) bool {
+		line := strip(diffLines[i])
+		return strings.Contains(line, normAnchor)
+	}
+
+	// Clamp hint
+	if hintIdx < 0 {
+		hintIdx = 0
+	}
+	if hintIdx >= len(diffLines) {
+		hintIdx = len(diffLines) - 1
+	}
+	// Check hint position first
+	if inBounds(hintIdx) && match(hintIdx) {
+		return hintIdx
+	}
+	// Expand search radius
+	for radius := 1; radius < len(diffLines); radius++ {
+		l := hintIdx - radius
+		r := hintIdx + radius
+		if inBounds(l) && match(l) {
+			return l
+		}
+		if inBounds(r) && match(r) {
+			return r
+		}
+	}
+	return -1
 }
