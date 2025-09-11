@@ -128,6 +128,8 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 					if comment.Path == "" || comment.Position <= 0 {
 						continue
 					}
+					// Ensure section headings like Why/How render on their own lines
+					formattedBody := formatReviewBody(comment.Body)
 					err := ar.Bitbucket.PushPullRequestInlineComment(
 						pullRequest.ID,
 						auto.Workspace,
@@ -136,7 +138,7 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 						auto.AppPassword,
 						comment.Path,
 						comment.Position,
-						comment.Body,
+						formattedBody,
 					)
 					if err != nil {
 						log.Errorf("Failed to post inline comment: %v", err)
@@ -267,4 +269,37 @@ func nearestMatchingLineIndex(diffLines []string, anchor string, hintIdx int) in
 		}
 	}
 	return -1
+}
+
+// formatReviewBody enforces line breaks after key headings to improve rendering
+func formatReviewBody(body string) string {
+    if body == "" {
+        return body
+    }
+    // Ensure headings appear at line starts and followed by a newline
+    replacements := []struct{ old, new string }{
+        {" Why:", "\nWhy:"},
+        {" How (step-by-step):", "\nHow (step-by-step):"},
+        {" Suggested change (Before/After):", "\nSuggested change (Before/After):"},
+        {" Notes:", "\nNotes:"},
+    }
+    formatted := body
+    for _, r := range replacements {
+        formatted = strings.ReplaceAll(formatted, r.old, r.new)
+    }
+    // If headings are embedded without preceding space, still enforce newline
+    more := []struct{ old, new string }{
+        {"Why:", "\nWhy:"},
+        {"How (step-by-step):", "\nHow (step-by-step):"},
+        {"Suggested change (Before/After):", "\nSuggested change (Before/After):"},
+        {"Notes:", "\nNotes:"},
+    }
+    for _, r := range more {
+        // Avoid duplicating newlines
+        formatted = strings.ReplaceAll(formatted, "\n"+r.old, "\n"+r.new)
+        if !strings.Contains(formatted, "\n"+r.new) {
+            formatted = strings.ReplaceAll(formatted, r.old, "\n"+r.new)
+        }
+    }
+    return formatted
 }

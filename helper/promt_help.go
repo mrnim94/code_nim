@@ -17,6 +17,25 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
   {"reviews": [{"lineNumber": <diff_line_index>, "lineText": "<exact line snippet>", "reviewComment": "<comment>"}]}
 
 - Review the unified diff for file "%s" below. The lineNumber refers to the 1-based index of the displayed diff lines (including context and +/- lines). Do not use absolute file line numbers. Also include the exact line text (lineText) you are referring to from the diff to help anchor placement.
+- Your reviewComment must be actionable like CodeRabbit. Use this structure:
+  [<Severity: nit|minor|medium|major|critical>] [<Category: bug|performance|security|style|readability|maintainability>]
+  <Short title in one sentence>
+  Why:
+    - <1-2 bullets on reasoning/risks>
+  How (step-by-step):
+    - <Precise steps to change code>
+  Suggested change (Before/After):
+    ~~~go
+    // Before
+    <minimal relevant snippet>
+    ~~~
+    ~~~go
+    // After
+    <minimal relevant snippet with improvement>
+    ~~~
+  Notes (optional):
+    - <edge cases, tests, follow-ups>
+
 - Focus your comments on code quality, bugs, logic errors, security, performance, and best practices.
 - Maybe Refactor the following code to improve readability, maintainability, and efficiency. Please ensure the logic remains unchanged.
 - Use clear, concise GitHub Markdown in your comments.
@@ -27,11 +46,7 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
 - If the diff is overly extensive, explicitly mention that it's too large for effective review.
 
 Examples of review comments:
-- Good: {"lineNumber": 42, "reviewComment": "Potential nil pointer dereference. Please check if 'user' is nil before accessing its fields."}
-- Good: {"lineNumber": 10, "reviewComment": "Consider using a constant for the retry interval to improve maintainability."}
-- Good: {"lineNumber": 27, "reviewComment": "The replica count 2 for scaling up in the update-envs step is hardcoded. Consider making this a parameter (e.g., target_replicas) to provide more flexibility and reusability for the workflow, allowing different target replica counts without modifying the workflow definition."}
-- Bad: {"lineNumber": 5, "reviewComment": "Add more comments to the code."} (Do NOT suggest this)
-- Bad: {"lineNumber": 12, "reviewComment": "Looks fine."} (Be specific and actionable)
+- {"lineNumber": 61, "lineText": "+ func matchesEngineID(deploymentName string, engineID string) bool {", "reviewComment": "[minor] [readability] Boundary-safe engine ID matching\nWhy:\n  - strings.Contains(name, suffix- may match unintended names (e.g., dlp vs adlp).\nHow (step-by-step):\n  - Ensure an ID matches only at word/hyphen boundary or end-of-name.\nSuggested change (Before/After):\n~~~go\n// Before\nreturn strings.Contains(deploymentName, engineID+\"-\") || strings.HasSuffix(deploymentName, engineID)\n~~~\n~~~go\n// After\nre := regexp.MustCompile((^|-)" + "" + "" + " + regexp.QuoteMeta(engineID) + "$")\nreturn re.MatchString(deploymentName)\n~~~\nNotes:\n  - Precompile the regex outside loops for performance; or implement non-regex boundary checks."}
 
 Pull Request Title: %s
 
