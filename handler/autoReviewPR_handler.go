@@ -30,8 +30,25 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 			log.Error("Error rotating session: %v", err)
 			return err
 		}
-		//fmt.Println(allPR)
+		log.Infof("Fetched %d pull requests for review", len(allPR))
 		for i, pullRequest := range allPR {
+			log.Infof("Processing PR #%d: '%s' by %s", pullRequest.ID, pullRequest.Title, pullRequest.Author.DisplayName)
+
+			ignorePROfName := false
+			for _, displayNameConfig := range auto.IgnorePullRequestOf.DisplayNames {
+				log.Debugf("Checking if PR author '%s' matches ignore list entry '%s'", pullRequest.Author.DisplayName, displayNameConfig)
+				if displayNameConfig == pullRequest.Author.DisplayName {
+					log.Infof("Will ignore PR #%d by %s (matches ignore list)", pullRequest.ID, displayNameConfig)
+					ignorePROfName = true
+					break // No need to check other ignore entries once we found a match
+				}
+			}
+			if ignorePROfName {
+				log.Infof("Skipping PR #%d (author is in ignore list)", pullRequest.ID)
+				continue
+			}
+
+			log.Infof("Starting review process for PR #%d by %s", pullRequest.ID, pullRequest.Author.DisplayName)
 			comments, err := ar.Bitbucket.FetchPullRequestComments(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
 			if err != nil {
 				log.Error("Error Pull Comments: %v", err)
@@ -177,50 +194,50 @@ func looksLikeCommand(body string) bool {
 // from snippet index (1-based in AI output) to destination file line (to-line).
 // For lines not present on destination (deleted '-' lines), the map value is <= 0.
 func buildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []int) {
-    var snippet []string
-    var toLineMap []int
-    for _, h := range hunks {
-        header, _ := h["header"].(string)
-        lines, _ := h["lines"].([]string)
-        // Parse header like: @@ -a,b +c,d @@
-        // Extract c (start line on destination)
-        destStart := 0
-        if parts := strings.Split(header, "+"); len(parts) > 1 {
-            // parts[1] like: c,d @@ ...
-            right := parts[1]
-            // trim up to first space or '@'
-            if idx := strings.IndexAny(right, " @"); idx >= 0 {
-                right = right[:idx]
-            }
-            if idx := strings.Index(right, ","); idx >= 0 {
-                right = right[:idx]
-            }
-            if v, err := strconv.Atoi(strings.TrimSpace(right)); err == nil {
-                destStart = v
-            }
-        }
-        destLine := destStart
-        for _, ln := range lines {
-            snippet = append(snippet, ln)
-            if strings.HasPrefix(ln, "+") || (!strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "-")) {
-                // added or context line advances destination
-                if strings.HasPrefix(ln, "+") {
-                    toLineMap = append(toLineMap, destLine)
-                    destLine++
-                } else {
-                    // context line
-                    toLineMap = append(toLineMap, destLine)
-                    destLine++
-                }
-            } else if strings.HasPrefix(ln, "-") {
-                // removed line: no destination line
-                toLineMap = append(toLineMap, -1)
-            } else {
-                toLineMap = append(toLineMap, -1)
-            }
-        }
-    }
-    return snippet, toLineMap
+	var snippet []string
+	var toLineMap []int
+	for _, h := range hunks {
+		header, _ := h["header"].(string)
+		lines, _ := h["lines"].([]string)
+		// Parse header like: @@ -a,b +c,d @@
+		// Extract c (start line on destination)
+		destStart := 0
+		if parts := strings.Split(header, "+"); len(parts) > 1 {
+			// parts[1] like: c,d @@ ...
+			right := parts[1]
+			// trim up to first space or '@'
+			if idx := strings.IndexAny(right, " @"); idx >= 0 {
+				right = right[:idx]
+			}
+			if idx := strings.Index(right, ","); idx >= 0 {
+				right = right[:idx]
+			}
+			if v, err := strconv.Atoi(strings.TrimSpace(right)); err == nil {
+				destStart = v
+			}
+		}
+		destLine := destStart
+		for _, ln := range lines {
+			snippet = append(snippet, ln)
+			if strings.HasPrefix(ln, "+") || (!strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "-")) {
+				// added or context line advances destination
+				if strings.HasPrefix(ln, "+") {
+					toLineMap = append(toLineMap, destLine)
+					destLine++
+				} else {
+					// context line
+					toLineMap = append(toLineMap, destLine)
+					destLine++
+				}
+			} else if strings.HasPrefix(ln, "-") {
+				// removed line: no destination line
+				toLineMap = append(toLineMap, -1)
+			} else {
+				toLineMap = append(toLineMap, -1)
+			}
+		}
+	}
+	return snippet, toLineMap
 }
 
 // nearestMatchingLineIndex finds the nearest index in diffLines whose content contains the anchor.
@@ -273,33 +290,33 @@ func nearestMatchingLineIndex(diffLines []string, anchor string, hintIdx int) in
 
 // formatReviewBody enforces line breaks after key headings to improve rendering
 func formatReviewBody(body string) string {
-    if body == "" {
-        return body
-    }
-    // Ensure headings appear at line starts and followed by a newline
-    replacements := []struct{ old, new string }{
-        {" Why:", "\nWhy:"},
-        {" How (step-by-step):", "\nHow (step-by-step):"},
-        {" Suggested change (Before/After):", "\nSuggested change (Before/After):"},
-        {" Notes:", "\nNotes:"},
-    }
-    formatted := body
-    for _, r := range replacements {
-        formatted = strings.ReplaceAll(formatted, r.old, r.new)
-    }
-    // If headings are embedded without preceding space, still enforce newline
-    more := []struct{ old, new string }{
-        {"Why:", "\nWhy:"},
-        {"How (step-by-step):", "\nHow (step-by-step):"},
-        {"Suggested change (Before/After):", "\nSuggested change (Before/After):"},
-        {"Notes:", "\nNotes:"},
-    }
-    for _, r := range more {
-        // Avoid duplicating newlines
-        formatted = strings.ReplaceAll(formatted, "\n"+r.old, "\n"+r.new)
-        if !strings.Contains(formatted, "\n"+r.new) {
-            formatted = strings.ReplaceAll(formatted, r.old, "\n"+r.new)
-        }
-    }
-    return formatted
+	if body == "" {
+		return body
+	}
+	// Ensure headings appear at line starts and followed by a newline
+	replacements := []struct{ old, new string }{
+		{" Why:", "\nWhy:"},
+		{" How (step-by-step):", "\nHow (step-by-step):"},
+		{" Suggested change (Before/After):", "\nSuggested change (Before/After):"},
+		{" Notes:", "\nNotes:"},
+	}
+	formatted := body
+	for _, r := range replacements {
+		formatted = strings.ReplaceAll(formatted, r.old, r.new)
+	}
+	// If headings are embedded without preceding space, still enforce newline
+	more := []struct{ old, new string }{
+		{"Why:", "\nWhy:"},
+		{"How (step-by-step):", "\nHow (step-by-step):"},
+		{"Suggested change (Before/After):", "\nSuggested change (Before/After):"},
+		{"Notes:", "\nNotes:"},
+	}
+	for _, r := range more {
+		// Avoid duplicating newlines
+		formatted = strings.ReplaceAll(formatted, "\n"+r.old, "\n"+r.new)
+		if !strings.Contains(formatted, "\n"+r.new) {
+			formatted = strings.ReplaceAll(formatted, r.old, "\n"+r.new)
+		}
+	}
+	return formatted
 }

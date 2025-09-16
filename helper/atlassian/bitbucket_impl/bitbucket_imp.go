@@ -63,6 +63,9 @@ func (hc *HttpClient) FetchAllPullRequests(username, appPassword, workspace, rep
 		return nil, err
 	}
 
+	// Log summary instead of full raw response to avoid massive logs
+	log.Debugf("Parsed API response: %d pull requests (page %d, size %d)", len(result.Values), result.Page, result.Size)
+
 	return result.Values, nil
 }
 
