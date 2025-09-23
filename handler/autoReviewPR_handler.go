@@ -12,6 +12,14 @@ import (
 	"time"
 )
 
+// Helper function for min operation
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 type AutoReviewPRHandler struct {
 	Bitbucket atlassian.Bitbucket
 }
@@ -98,7 +106,22 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 				prompt := helper.CreatePrompt(filePath, allLines, &pullRequest)
 				comments, err := helper.GetAIResponseOfGemini(prompt, auto.GeminiKey, "gemini-2.5-flash")
 				if err != nil {
-					log.Printf("AI error: %v", err)
+					log.Errorf("AI error for file %s in PR #%d: %v", filePath, pullRequest.ID, err)
+					
+					// Check if it's a rate limit error and provide specific guidance
+					errStr := err.Error()
+					if strings.Contains(errStr, "rate limit exceeded") {
+						log.Errorf("Rate limit hit for PR #%d. Consider:")
+						log.Error("  1. Reducing the number of PRs processed per run")
+						log.Error("  2. Adding delays between API calls")
+						log.Error("  3. Upgrading your Gemini API plan")
+						log.Error("  4. Processing only smaller PRs to reduce token usage")
+						// Consider breaking the loop if rate limited to avoid more failures
+						log.Infof("Skipping remaining files for PR #%d due to rate limit", pullRequest.ID)
+						break // Skip remaining files for this PR
+					}
+					
+					log.Debugf("Prompt that caused the error (first 200 chars): %s", prompt[:min(200, len(prompt))])
 					continue
 				}
 				for i := range comments {

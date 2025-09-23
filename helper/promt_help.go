@@ -9,6 +9,21 @@ import (
 	"strings"
 )
 
+// Helper functions for min/max operations
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) string {
 	log.Debugf("Begin to Create Prompt for PR: %d", pr.ID)
 	return fmt.Sprintf(`You are an expert code reviewer. Please follow these instructions carefully:
@@ -77,13 +92,52 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 	b, _ := json.Marshal(payload)
 	resp, err := http.Post(url, "application/json", strings.NewReader(string(b)))
 	if err != nil {
-		log.Error(err)
+		log.Errorf("Failed to make request to Gemini API: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
+	
+	// Check HTTP status code first
+	if resp.StatusCode != 200 {
+		var errorResult model.GeminiErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&errorResult); err != nil {
+			log.Errorf("Failed to decode error response from Gemini API (status %d): %v", resp.StatusCode, err)
+			return nil, fmt.Errorf("gemini API returned status %d", resp.StatusCode)
+		}
+		
+		// Handle specific error types using the structured response
+		code := errorResult.Error.Code
+		message := errorResult.Error.Message
+		status := errorResult.Error.Status
+		
+		switch code {
+		case 429:
+			log.Errorf("Gemini API rate limit exceeded: %s", message)
+			log.Error("Please check your API quota and billing details")
+			log.Error("For more information: https://ai.google.dev/gemini-api/docs/rate-limits")
+			return nil, fmt.Errorf("gemini API rate limit exceeded: %s", message)
+		case 401:
+			log.Errorf("Gemini API authentication failed: %s", message)
+			log.Error("Please check your API key")
+			return nil, fmt.Errorf("gemini API authentication failed: %s", message)
+		case 403:
+			log.Errorf("Gemini API access forbidden: %s", message)
+			log.Error("Please check your API permissions and billing")
+			return nil, fmt.Errorf("gemini API access forbidden: %s", message)
+		case 400:
+			log.Errorf("Gemini API bad request: %s", message)
+			log.Error("Please check your request parameters and model name")
+			return nil, fmt.Errorf("gemini API bad request: %s", message)
+		default:
+			log.Errorf("Gemini API error (code %d, status %s): %s", code, status, message)
+			return nil, fmt.Errorf("gemini API error: %s", message)
+		}
+	}
+	
+	// Parse successful response
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Error(err)
+		log.Errorf("Failed to decode successful response from Gemini API: %v", err)
 		return nil, err
 	}
 	// Extract text
@@ -103,11 +157,36 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 		text = strings.TrimSuffix(text, "```")
 	}
 	text = strings.TrimSpace(text)
+	
+	// Add validation and better error handling for JSON parsing
+	if text == "" {
+		log.Error("Received empty response from AI")
+		return []model.ReviewComment{}, nil // Return empty slice instead of error
+	}
+	
+	// Check if the response looks like JSON
+	if !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
+		log.Errorf("AI response doesn't appear to be JSON. First 100 chars: %s", 
+			text[:min(100, len(text))])
+		return []model.ReviewComment{}, nil // Return empty slice instead of error
+	}
+	
+	// Log the full response for debugging when JSON parsing fails
+	log.Debugf("Attempting to parse AI response JSON (length: %d)", len(text))
+	
 	var respObj model.ReviewResponse
 	if err := json.Unmarshal([]byte(text), &respObj); err != nil {
-		log.Error(err)
-		log.Error("Debug raw data form AI" + text)
-		return nil, err
+		log.Errorf("Failed to parse JSON from AI response: %v", err)
+		log.Errorf("Raw AI response (first 500 chars): %s", text[:min(500, len(text))])
+		log.Errorf("Raw AI response (last 200 chars): %s", text[max(0, len(text)-200):])
+		
+		// Try to check if JSON is just incomplete by looking for common patterns
+		if strings.Contains(text, `"reviews"`) && !strings.HasSuffix(text, "}") {
+			log.Error("AI response appears to be incomplete JSON (missing closing brace)")
+		}
+		
+		// Return empty slice instead of error to allow processing to continue
+		return []model.ReviewComment{}, nil
 	}
 	var comments []model.ReviewComment
 	for _, r := range respObj.Reviews {
