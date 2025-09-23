@@ -14,6 +14,7 @@ type AutoReviewPR struct {
 	Username            string   `yaml:"username"`
 	AppPassword         string   `yaml:"appPassword"`
 	GeminiKey           string   `yaml:"geminiKey"`
+	GeminiModel         string   `yaml:"geminiModel,omitempty"`
 	IgnorePullRequestOf struct {
 		DisplayNames []string `yaml:"displayNames"`
 	} `yaml:"ignorePullRequestOf"`

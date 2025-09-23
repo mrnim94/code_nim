@@ -104,7 +104,17 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 					continue
 				}
 				prompt := helper.CreatePrompt(filePath, allLines, &pullRequest)
-				comments, err := helper.GetAIResponseOfGemini(prompt, auto.GeminiKey, "gemini-2.5-flash")
+				
+				// Use configured model or default to gemini-2.5-flash
+				model := auto.GeminiModel
+				if model == "" {
+					model = "gemini-2.5-flash" // Default model
+					log.Debugf("No model specified in config, using default: %s", model)
+				} else {
+					log.Debugf("Using configured Gemini model: %s", model)
+				}
+				
+				comments, err := helper.GetAIResponseOfGemini(prompt, auto.GeminiKey, model)
 				if err != nil {
 					log.Errorf("AI error for file %s in PR #%d: %v", filePath, pullRequest.ID, err)
 					
