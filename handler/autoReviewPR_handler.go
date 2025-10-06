@@ -62,30 +62,44 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 				log.Error("Error Pull Comments: %v", err)
 				return err
 			}
+			
+			// Build a map of existing inline comments by this user for duplicate detection
+			existingInlineComments := make(map[string]bool) // key format: "filepath:linenumber"
 			userCommented := false
+			
 			// Check if the user or any of their display names have already commented
 			for i2, comment := range comments {
 				log.Debugf("Check Comment of %s - %s in PR : %d - %d", comment.User.Username, comment.User.DisplayName, pullRequest.ID, i2)
-				if comment.User.Username == auto.Username && comment.Content.Raw != "" {
-					log.Debugf("User %s Commented", auto.Username)
-					userCommented = true
-					break
+				
+				isUserComment := comment.User.Username == auto.Username
+				if !isUserComment {
+					// Check against all display names
+					for _, displayName := range auto.DisplayNames {
+						if comment.User.DisplayName == displayName {
+							isUserComment = true
+							break
+						}
+					}
 				}
-				// Check against all display names
-				for _, displayName := range auto.DisplayNames {
-					if comment.User.DisplayName == displayName && comment.Content.Raw != "" {
-						log.Debugf("User %s Commented", displayName)
-						log.Debugf("Comment is : %s", comment.Content.Raw)
+				
+				if isUserComment && comment.Content.Raw != "" {
+					log.Debugf("User %s Commented", comment.User.Username)
+					
+					// If it's an inline comment, track its position
+					if comment.Inline != nil {
+						key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
+						existingInlineComments[key] = true
+						log.Debugf("Found existing inline comment at %s", key)
+					} else {
+						// If it's a general PR comment, skip the whole PR
 						userCommented = true
 						break
 					}
 				}
-				if userCommented {
-					break
-				}
 			}
+			
 			if userCommented {
-				continue // Skip review if user already commented with non-empty content
+				continue // Skip review if user already commented with non-empty general comment
 			}
 			log.Debugf("Check Diff PR: %d - %d", pullRequest.ID, i)
 			diff, err := ar.Bitbucket.FetchPullRequestDiff(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
@@ -178,6 +192,14 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 					if comment.Path == "" || comment.Position <= 0 {
 						continue
 					}
+					
+					// Check if we already have an inline comment at this position
+					commentKey := fmt.Sprintf("%s:%d", comment.Path, comment.Position)
+					if existingInlineComments[commentKey] {
+						log.Debugf("Skipping duplicate inline comment at %s (already exists)", commentKey)
+						continue
+					}
+					
 					// Ensure section headings like Why/How render on their own lines
 					formattedBody := formatReviewBody(comment.Body)
 					err := ar.Bitbucket.PushPullRequestInlineComment(
@@ -192,6 +214,10 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 					)
 					if err != nil {
 						log.Errorf("Failed to post inline comment: %v", err)
+					} else {
+						// Mark this position as commented to prevent duplicates in this run
+						existingInlineComments[commentKey] = true
+						log.Debugf("Posted new inline comment at %s", commentKey)
 					}
 				}
 			}
@@ -326,30 +352,30 @@ func formatReviewBody(body string) string {
 	if body == "" {
 		return body
 	}
-	// Ensure headings appear at line starts and followed by a newline
-	replacements := []struct{ old, new string }{
-		{" Why:", "\nWhy:"},
-		{" How (step-by-step):", "\nHow (step-by-step):"},
-		{" Suggested change (Before/After):", "\nSuggested change (Before/After):"},
-		{" Notes:", "\nNotes:"},
+	
+	// List of headings that should start on new lines
+	headings := []string{
+		"Why:",
+		"How (step-by-step):",
+		"Suggested change (Before/After):",
+		"Notes:",
 	}
+	
 	formatted := body
-	for _, r := range replacements {
-		formatted = strings.ReplaceAll(formatted, r.old, r.new)
-	}
-	// If headings are embedded without preceding space, still enforce newline
-	more := []struct{ old, new string }{
-		{"Why:", "\nWhy:"},
-		{"How (step-by-step):", "\nHow (step-by-step):"},
-		{"Suggested change (Before/After):", "\nSuggested change (Before/After):"},
-		{"Notes:", "\nNotes:"},
-	}
-	for _, r := range more {
-		// Avoid duplicating newlines
-		formatted = strings.ReplaceAll(formatted, "\n"+r.old, "\n"+r.new)
-		if !strings.Contains(formatted, "\n"+r.new) {
-			formatted = strings.ReplaceAll(formatted, r.old, "\n"+r.new)
+	for _, heading := range headings {
+		// Replace both " Heading:" and "Heading:" patterns, ensuring no duplicate newlines
+		spacedHeading := " " + heading
+		newlineHeading := "\n" + heading
+		
+		// Replace spaced version first
+		formatted = strings.ReplaceAll(formatted, spacedHeading, newlineHeading)
+		
+		// Then handle standalone headings that don't already have newlines
+		// Use a more targeted approach to avoid duplicate newlines
+		if !strings.Contains(formatted, newlineHeading) {
+			formatted = strings.ReplaceAll(formatted, heading, newlineHeading)
 		}
 	}
+	
 	return formatted
 }

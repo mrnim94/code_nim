@@ -22,4 +22,8 @@ type PullRequestComment struct {
 		DisplayName string `json:"display_name"` // The name of the author
 		Username    string `json:"nickname"`     // The username of the author (used instead of `username` in the raw response)
 	} `json:"user"`
+	Inline *struct {
+		Path string `json:"path"` // File path for inline comments
+		To   int    `json:"to"`   // Line number for inline comments
+	} `json:"inline,omitempty"` // Only present for inline comments
 }
