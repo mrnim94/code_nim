@@ -94,11 +94,9 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				return err
 			}
 			
-			// Build a map of existing inline comments by this user for duplicate detection
-			existingInlineComments := make(map[string]bool) // key format: "filepath:linenumber"
+			// Check if the user or any of their display names have already commented
 			userCommented := false
 			
-			// Check if the user or any of their display names have already commented
 			for i2, comment := range comments {
 				log.Debugf("Check Comment of %s - %s in PR : %d - %d", comment.User.Username, comment.User.DisplayName, pullRequest.ID, i2)
 				
@@ -114,23 +112,20 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				}
 				
 				if isUserComment && comment.Content.Raw != "" {
-					log.Debugf("User %s Commented", comment.User.Username)
-					
-					// If it's an inline comment, track its position
+					log.Debugf("User %s already commented on PR #%d", comment.User.Username, pullRequest.ID)
 					if comment.Inline != nil {
-						key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
-						existingInlineComments[key] = true
-						log.Debugf("Found existing inline comment at %s", key)
+						log.Debugf("Found existing inline comment at %s:%d", comment.Inline.Path, comment.Inline.To)
 					} else {
-						// If it's a general PR comment, skip the whole PR
-						userCommented = true
-						break
+						log.Debugf("Found existing general PR comment")
 					}
+					userCommented = true
+					break // Skip the entire PR if user has made ANY comment (inline or general)
 				}
 			}
 			
 			if userCommented {
-				continue // Skip review if user already commented with non-empty general comment
+				log.Infof("Skipping PR #%d - user has already reviewed (commented)", pullRequest.ID)
+				continue // Skip review if user already commented anywhere on the PR
 			}
 			log.Debugf("Check Diff PR: %d - %d", pullRequest.ID, i)
 			diff, err := ar.Bitbucket.FetchPullRequestDiff(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
@@ -228,12 +223,8 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 						continue
 					}
 					
-					// Check if we already have an inline comment at this position
-					commentKey := fmt.Sprintf("%s:%d", comment.Path, comment.Position)
-					if existingInlineComments[commentKey] {
-						log.Debugf("Skipping duplicate inline comment at %s (already exists)", commentKey)
-						continue
-					}
+					// Since we skip entire PRs where user has already commented,
+					// we don't need to check for existing inline comments here
 					
 					// Ensure section headings like Why/How render on their own lines
 					formattedBody := formatReviewBody(comment.Body)
@@ -250,9 +241,7 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					if err != nil {
 						log.Errorf("Failed to post inline comment: %v", err)
 					} else {
-						// Mark this position as commented to prevent duplicates in this run
-						existingInlineComments[commentKey] = true
-						log.Debugf("Posted new inline comment at %s", commentKey)
+						log.Debugf("Posted new inline comment on %s at line %d", comment.Path, comment.Position)
 					}
 				}
 			}
