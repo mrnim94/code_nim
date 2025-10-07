@@ -373,13 +373,13 @@ func nearestMatchingLineIndex(diffLines []string, anchor string, hintIdx int) in
 	return -1
 }
 
-// formatReviewBody enforces line breaks before key headings to improve rendering
+// formatReviewBody enforces proper markdown formatting with paragraph breaks for better rendering
 func formatReviewBody(body string) string {
 	if body == "" {
 		return body
 	}
 	
-	// List of headings that should start on new lines
+	// List of headings that should start on new paragraphs
 	headings := []string{
 		"Why:",
 		"How (step-by-step):",
@@ -389,19 +389,38 @@ func formatReviewBody(body string) string {
 	
 	formatted := body
 	
-	// Simple and reliable approach: replace any occurrence of these headings
-	// with newline + heading, then clean up any duplicate newlines
+	// Use double newlines for proper markdown paragraph breaks
 	for _, heading := range headings {
-		// Replace both spaced and non-spaced versions
-		formatted = strings.ReplaceAll(formatted, " "+heading, "\n"+heading)
-		formatted = strings.ReplaceAll(formatted, heading, "\n"+heading)
+		// Replace " Heading:" with proper paragraph break
+		spacedHeading := " " + heading
+		properHeading := "\n\n" + heading
+		formatted = strings.ReplaceAll(formatted, spacedHeading, properHeading)
+		
+		// Handle cases where heading appears without preceding space
+		// but avoid double-replacing already formatted headings
+		if !strings.Contains(formatted, properHeading) {
+			formatted = strings.ReplaceAll(formatted, heading, properHeading)
+		}
 	}
 	
-	// Clean up duplicate newlines
-	formatted = strings.ReplaceAll(formatted, "\n\n", "\n")
+	// Clean up excessive newlines (more than 2 consecutive)
+	for strings.Contains(formatted, "\n\n\n") {
+		formatted = strings.ReplaceAll(formatted, "\n\n\n", "\n\n")
+	}
 	
-	// Remove leading newline if it exists (in case first word was a heading)
-	formatted = strings.TrimPrefix(formatted, "\n")
+	// Remove leading newlines if they exist
+	formatted = strings.TrimLeft(formatted, "\n")
+	
+	// Ensure proper spacing after colons and before bullets
+	formatted = strings.ReplaceAll(formatted, ":\n  -", ":\n\n  -")
+	formatted = strings.ReplaceAll(formatted, ":\n-", ":\n\n-")
+	
+	// Improve code block formatting with proper spacing
+	formatted = strings.ReplaceAll(formatted, "~~~go\n//", "~~~go\n\n//")
+	formatted = strings.ReplaceAll(formatted, "~~~\n~~~", "~~~\n\n~~~")
+	
+	// Ensure proper spacing around code blocks
+	formatted = strings.ReplaceAll(formatted, "):\n~~~", "):\n\n~~~")
 	
 	return formatted
 }
