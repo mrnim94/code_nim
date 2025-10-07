@@ -9,6 +9,7 @@ import (
 	"github.com/go-co-op/gocron"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,17 +23,41 @@ func min(a, b int) int {
 
 type AutoReviewPRHandler struct {
 	Bitbucket atlassian.Bitbucket
+	mutex     sync.Mutex // Prevents concurrent review executions
+	isRunning bool       // Flag to track if review is currently running
 }
 
-func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
+func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 	var cfg model.Task
 	helper.LoadConfigFile(&cfg)
 	log.Info("Init Review PullRequest Handler")
 
 	s := gocron.NewScheduler(time.UTC)
+	
+	// Enable singleton mode to prevent overlapping job executions at the gocron level
+	s.SingletonMode()
 
 	reviewTask := func(auto model.AutoReviewPR) error {
-		log.Info("Start Review PR Handler")
+		// Check if another review is already running (thread-safe check)
+		ar.mutex.Lock()
+		if ar.isRunning {
+			ar.mutex.Unlock()
+			log.Infof("Skipping review execution - another review process is already running for %s/%s", auto.Workspace, auto.RepoSlug)
+			return nil
+		}
+		ar.isRunning = true
+		ar.mutex.Unlock()
+		
+		// Ensure we reset the running flag when done
+		defer func() {
+			ar.mutex.Lock()
+			ar.isRunning = false
+			ar.mutex.Unlock()
+			log.Info("Review PR Handler completed - lock released")
+		}()
+		
+		startTime := time.Now()
+		log.Infof("Start Review PR Handler for %s/%s (acquired lock)", auto.Workspace, auto.RepoSlug)
 		allPR, err := ar.Bitbucket.FetchAllPullRequests(auto.Username, auto.AppPassword, auto.Workspace, auto.RepoSlug)
 		if err != nil {
 			log.Error("Error rotating session: %v", err)
@@ -41,6 +66,12 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 		log.Infof("Fetched %d pull requests for review", len(allPR))
 		for i, pullRequest := range allPR {
 			log.Infof("Processing PR #%d: '%s' by %s", pullRequest.ID, pullRequest.Title, pullRequest.Author.DisplayName)
+			
+			// Add small delay between PRs to reduce API load and prevent rate limiting
+			if i > 0 {
+				time.Sleep(2 * time.Second)
+				log.Debugf("Added delay before processing PR #%d", pullRequest.ID)
+			}
 
 			ignorePROfName := false
 			for _, displayNameConfig := range auto.IgnorePullRequestOf.DisplayNames {
@@ -129,6 +160,10 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 				}
 				
 				comments, err := helper.GetAIResponseOfGemini(prompt, auto.GeminiKey, model)
+				
+				// Add small delay after Gemini API call to prevent rate limiting
+				time.Sleep(1 * time.Second)
+				
 				if err != nil {
 					log.Errorf("AI error for file %s in PR #%d: %v", filePath, pullRequest.ID, err)
 					
@@ -223,6 +258,8 @@ func (ar AutoReviewPRHandler) HandlerAutoReviewPR() {
 			}
 		}
 
+		duration := time.Since(startTime)
+		log.Infof("Review PR Handler completed for %s/%s in %v", auto.Workspace, auto.RepoSlug, duration)
 		return nil
 	}
 
@@ -347,7 +384,7 @@ func nearestMatchingLineIndex(diffLines []string, anchor string, hintIdx int) in
 	return -1
 }
 
-// formatReviewBody enforces line breaks after key headings to improve rendering
+// formatReviewBody enforces line breaks before key headings to improve rendering
 func formatReviewBody(body string) string {
 	if body == "" {
 		return body
@@ -362,20 +399,20 @@ func formatReviewBody(body string) string {
 	}
 	
 	formatted := body
+	
+	// Simple and reliable approach: replace any occurrence of these headings
+	// with newline + heading, then clean up any duplicate newlines
 	for _, heading := range headings {
-		// Replace both " Heading:" and "Heading:" patterns, ensuring no duplicate newlines
-		spacedHeading := " " + heading
-		newlineHeading := "\n" + heading
-		
-		// Replace spaced version first
-		formatted = strings.ReplaceAll(formatted, spacedHeading, newlineHeading)
-		
-		// Then handle standalone headings that don't already have newlines
-		// Use a more targeted approach to avoid duplicate newlines
-		if !strings.Contains(formatted, newlineHeading) {
-			formatted = strings.ReplaceAll(formatted, heading, newlineHeading)
-		}
+		// Replace both spaced and non-spaced versions
+		formatted = strings.ReplaceAll(formatted, " "+heading, "\n"+heading)
+		formatted = strings.ReplaceAll(formatted, heading, "\n"+heading)
 	}
+	
+	// Clean up duplicate newlines
+	formatted = strings.ReplaceAll(formatted, "\n\n", "\n")
+	
+	// Remove leading newline if it exists (in case first word was a heading)
+	formatted = strings.TrimPrefix(formatted, "\n")
 	
 	return formatted
 }
