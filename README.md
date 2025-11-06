@@ -2,6 +2,85 @@
 
 An enterprise-ready automated Pull Request reviewer for Bitbucket using Google's Gemini AI. It periodically scans configured repositories, fetches open PRs, generates structured AI review comments from diffs, and posts them back to Bitbucket with advanced concurrency protection and duplicate prevention. Built with Go, Echo, Logrus, and gocron.
 
+## 🧪 Quickstart (2 minutes)
+
+Follow these steps to run the reviewer quickly.
+
+1) Choose your AI provider and create a minimal config
+
+Self-hosted AI (no key required):
+```yaml
+autoReviewPR:
+  - processName: local-self-ai
+    cron: "*/5 * * * *"   # every 5 minutes
+    gitProvider: bitbucket
+    workspace: <your-workspace>
+    repoSlug: <your-repo>
+    displayNames:
+      - <Your Display Name>
+    username: <bitbucket-username>
+    appPassword: <bitbucket-app-password>
+
+    aiProvider: self
+    aiModel: gpt5-high-fast
+    selfApiBaseUrl: http://127.0.0.1:1994
+```
+
+Gemini (Google Generative Language API):
+```yaml
+autoReviewPR:
+  - processName: gemini
+    cron: "*/5 * * * *"
+    gitProvider: bitbucket
+    workspace: <your-workspace>
+    repoSlug: <your-repo>
+    displayNames:
+      - <Your Display Name>
+    username: <bitbucket-username>
+    appPassword: <bitbucket-app-password>
+
+    geminiKey: <google-generative-language-api-key>
+    geminiModel: gemini-2.5-flash
+```
+
+2) Run the service
+
+Using Go:
+```bash
+go run .
+```
+
+Using Docker:
+```bash
+docker run -d --name code-nim \
+  -e LOG_LEVEL=INFO \
+  -e TZ=Asia/Ho_Chi_Minh \
+  -p 1994:1994 \
+  -v /absolute/path/review-config.yaml:/config_file/review-config.yaml \
+  --restart unless-stopped \
+  mrnim94/code_nim:latest
+```
+
+3) Verify it’s working
+
+Check logs for startup and scheduling:
+```
+INFO Init Review PullRequest Handler
+INFO Setup Review  0  ==>  */5 * * * *
+INFO Start Review PR Handler for <workspace>/<repo> (acquired lock)
+INFO Fetched N pull requests for review
+```
+
+If using self-hosted AI, you can test it separately:
+```bash
+curl -i -X POST \
+  -H "Content-Type:application/json" \
+  -d '{"contents":[{"parts":[{"text":"Explain how AI works in a few words"}]}]}' \
+  http://127.0.0.1:1994/v1beta/models/gpt5-high-fast
+```
+
+That’s it. The reviewer will periodically scan PRs, generate suggestions, and post inline comments.
+
 ## 🚀 Features
 
 ### Core Functionality

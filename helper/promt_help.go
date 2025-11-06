@@ -5,6 +5,7 @@ import (
 	"code_nim/model"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -22,6 +23,56 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// escapeControlCharsInJSONString escapes invalid control characters inside JSON string literals.
+// It only transforms characters that appear inside quoted strings.
+func escapeControlCharsInJSONString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	inString := false
+	backslashes := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' {
+			backslashes++
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '"' {
+			if backslashes%2 == 0 {
+				inString = !inString
+			}
+			backslashes = 0
+			b.WriteByte(ch)
+			continue
+		}
+		if backslashes > 0 {
+			backslashes = 0
+		}
+		if inString {
+			switch ch {
+			case '\t':
+				b.WriteString("\\t")
+				continue
+			case '\r':
+				b.WriteString("\\r")
+				continue
+			case '\n':
+				b.WriteString("\\n")
+				continue
+			default:
+				if ch < 0x20 { // other control chars
+					b.WriteString("\\u00")
+					hex := fmt.Sprintf("%02x", ch)
+					b.WriteString(hex)
+					continue
+				}
+			}
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
 }
 
 func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) string {
@@ -78,6 +129,91 @@ Git Diff to Review:
 
 }
 
+// CreateSummaryPrompt builds a prompt that asks the AI to summarize the PR in
+// a CodeRabbit-like style with grouped bullets.
+func CreateSummaryPrompt(pr *model.PullRequest, diff string) string {
+	log.Debugf("Create Summary Prompt for PR: %d", pr.ID)
+	return fmt.Sprintf(`You are an expert code reviewer.
+
+Produce a PR overview in Markdown that contains EXACTLY these sections, in this order:
+
+## Summary
+Output a grouped bullet list matching CodeRabbit style. Use EXACTLY this Markdown structure with blank lines between sections.
+
+REQUIRED FORMAT:
+
+**New Features**
+
+- <Item text starting with a verb, ending with period.>
+- <Item text starting with a verb, ending with period.>
+
+**Bug Fixes**
+
+- <Item text starting with a verb, ending with period.>
+
+**Documentation**
+- <Item text starting with a verb, ending with period.>
+
+**Refactor**
+
+- <Item text starting with a verb, ending with period.>
+
+**Performance**
+
+- <Item text starting with a verb, ending with period.>
+
+**Tests**
+
+- <Item text starting with a verb, ending with period.>
+
+**Chores**
+
+- <Item text starting with a verb, ending with period.>
+
+Critical rules:
+- Section headers are standalone bold lines (no list bullet): "**Section Name**".
+- Each item is a single-level hyphen bullet with EXACTLY one hyphen and one space: "- Item text" (no icons like ○, •, ✔, or emojis).
+- Keep a blank line before and after each section header for visual separation.
+- 2-6 items per populated section.
+- Each item ≤ 140 chars; start with verb, end with period.
+- Omit empty sections completely.
+
+## Walkthrough
+A short paragraph (3-6 sentences) explaining the overall intent of the change and major areas touched.
+
+## Changes
+A compact table with two columns: Cohort / File(s) | Change Summary. Group related files by directory or purpose. Keep each summary to one short sentence.
+
+## Sequence Flow
+Provide a concise, plain Markdown numbered list that describes the most important end-to-end steps affected by this PR.
+
+Plain output rules:
+- Use an ordered list (1., 2., 3., ...). One step per line.
+- Format each step as: Actor -> Target: short action/result (≤ 80 chars).
+- Keep between 6 and 12 steps. Prefer high-signal actions; avoid noise.
+- If a step is conditional, prefix briefly in parentheses, e.g.: (if samba-server) delete/update smb-storage-class.
+
+
+Style rules:
+- Be concise and high-signal; avoid repetition.
+- Use verbs at the start of bullets and summaries.
+- No shell commands.
+- Output must be valid Markdown.
+
+Pull Request Title: %s
+
+Pull Request Description:
+---
+%s
+---
+
+Unified Git Diff:
+---diff
+%s
+---
+`, pr.Title, pr.Description, diff)
+}
+
 func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]model.ReviewComment, error) {
 	// Gemini API endpoint (v1beta/models/gemini-2.0-flash-001:generateContent)
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", geminiModel, geminiKey)
@@ -96,7 +232,7 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	// Check HTTP status code first
 	if resp.StatusCode != 200 {
 		var errorResult model.GeminiErrorResponse
@@ -104,12 +240,12 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 			log.Errorf("Failed to decode error response from Gemini API (status %d): %v", resp.StatusCode, err)
 			return nil, fmt.Errorf("gemini API returned status %d", resp.StatusCode)
 		}
-		
+
 		// Handle specific error types using the structured response
 		code := errorResult.Error.Code
 		message := errorResult.Error.Message
 		status := errorResult.Error.Status
-		
+
 		switch code {
 		case 429:
 			log.Errorf("Gemini API rate limit exceeded: %s", message)
@@ -133,7 +269,7 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 			return nil, fmt.Errorf("gemini API error: %s", message)
 		}
 	}
-	
+
 	// Parse successful response
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -150,41 +286,37 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 		}
 	}
 	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, "```json") {
-		text = strings.TrimPrefix(text, "```json")
-	}
-	if strings.HasSuffix(text, "```") {
-		text = strings.TrimSuffix(text, "```")
-	}
+	text = strings.TrimPrefix(text, "```json")
+	text = strings.TrimSuffix(text, "```")
 	text = strings.TrimSpace(text)
-	
+
 	// Add validation and better error handling for JSON parsing
 	if text == "" {
 		log.Error("Received empty response from AI")
 		return []model.ReviewComment{}, nil // Return empty slice instead of error
 	}
-	
+
 	// Check if the response looks like JSON
 	if !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
-		log.Errorf("AI response doesn't appear to be JSON. First 100 chars: %s", 
+		log.Errorf("AI response doesn't appear to be JSON. First 100 chars: %s",
 			text[:min(100, len(text))])
 		return []model.ReviewComment{}, nil // Return empty slice instead of error
 	}
-	
+
 	// Log the full response for debugging when JSON parsing fails
 	log.Debugf("Attempting to parse AI response JSON (length: %d)", len(text))
-	
+
 	var respObj model.ReviewResponse
 	if err := json.Unmarshal([]byte(text), &respObj); err != nil {
 		log.Errorf("Failed to parse JSON from AI response: %v", err)
 		log.Errorf("Raw AI response (first 500 chars): %s", text[:min(500, len(text))])
 		log.Errorf("Raw AI response (last 200 chars): %s", text[max(0, len(text)-200):])
-		
+
 		// Try to check if JSON is just incomplete by looking for common patterns
 		if strings.Contains(text, `"reviews"`) && !strings.HasSuffix(text, "}") {
 			log.Error("AI response appears to be incomplete JSON (missing closing brace)")
 		}
-		
+
 		// Return empty slice instead of error to allow processing to continue
 		return []model.ReviewComment{}, nil
 	}
@@ -194,6 +326,288 @@ func GetAIResponseOfGemini(prompt string, geminiKey, geminiModel string) ([]mode
 		comments = append(comments, model.ReviewComment{
 			Body:     r.ReviewComment,
 			Path:     "", // to be filled by caller
+			Position: r.LineNumber,
+			Anchor:   anchor,
+		})
+	}
+	return comments, nil
+}
+
+// getGeminiText returns the raw text response from Gemini for a given prompt.
+func getGeminiText(prompt string, geminiKey, geminiModel string) (string, error) {
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", geminiModel, geminiKey)
+	payload := map[string]interface{}{
+		"contents": []map[string]interface{}{{"parts": []map[string]string{{"text": prompt}}}},
+		"generationConfig": map[string]interface{}{
+			"maxOutputTokens": 2048,
+			"temperature":     0.4,
+			"topP":            0.95,
+		},
+	}
+	b, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(b)))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		var errorResult model.GeminiErrorResponse
+		_ = json.NewDecoder(resp.Body).Decode(&errorResult)
+		return "", fmt.Errorf("gemini status %d: %s", resp.StatusCode, errorResult.Error.Message)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	var text string
+	if c, ok := result["candidates"].([]interface{}); ok && len(c) > 0 {
+		if content, ok := c[0].(map[string]interface{})["content"].(map[string]interface{}); ok {
+			if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
+				if t, ok := parts[0].(map[string]interface{})["text"].(string); ok {
+					text = t
+				}
+			}
+		}
+	}
+	text = strings.TrimSpace(text)
+	text = strings.TrimPrefix(text, "```markdown")
+	text = strings.TrimPrefix(text, "```md")
+	text = strings.TrimPrefix(text, "```json")
+	text = strings.TrimSuffix(text, "```")
+	return strings.TrimSpace(text), nil
+}
+
+// GetAISummary returns a Markdown summary text via the configured provider.
+func GetAISummary(prompt string, cfg *model.AutoReviewPR) (string, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.AIProvider))
+	modelName := strings.TrimSpace(cfg.AIModel)
+	if modelName == "" {
+		modelName = strings.TrimSpace(cfg.GeminiModel)
+	}
+	if modelName == "" {
+		modelName = "gemini-2.5-flash"
+	}
+	log.Debugf("Getting AI summary for provider: %s and model %s", provider, modelName)
+
+	switch provider {
+	case "self":
+		base := strings.TrimSpace(cfg.SelfAPIBaseURL)
+		if base == "" {
+			return "", fmt.Errorf("selfApiBaseUrl is required when aiProvider=self")
+		}
+		// Call self API directly to get text (avoid JSON-review path/logging)
+		base = strings.TrimRight(base, "/")
+		url := fmt.Sprintf("%s/v1beta/models/%s", base, modelName)
+		b, _ := json.Marshal(map[string]interface{}{
+			"contents": []map[string]interface{}{{"parts": []map[string]string{{"text": prompt}}}},
+		})
+		log.Debugf("Calling self API for summary at: %s", url)
+		resp, err := http.Post(url, "application/json", strings.NewReader(string(b)))
+		if err != nil {
+			log.Errorf("Self API HTTP error: %v", err)
+			return "", err
+		}
+		defer resp.Body.Close()
+		rawBody, _ := io.ReadAll(resp.Body)
+		log.Debugf("Self API raw response (first 500 chars): %s", string(rawBody)[:min(500, len(rawBody))])
+
+		// Try JSON path first
+		var obj map[string]interface{}
+		if json.Unmarshal(rawBody, &obj) == nil {
+			var text string
+			if c, ok := obj["candidates"].([]interface{}); ok && len(c) > 0 {
+				if content, ok := c[0].(map[string]interface{})["content"].(map[string]interface{}); ok {
+					if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
+						if t, ok := parts[0].(map[string]interface{})["text"].(string); ok {
+							text = t
+							log.Debugf("Extracted text from candidates path, length: %d", len(text))
+						}
+					}
+				}
+			}
+			if text == "" {
+				if t, ok := obj["text"].(string); ok {
+					text = t
+					log.Debugf("Extracted text from root 'text' field, length: %d", len(text))
+				}
+			}
+			if text == "" {
+				log.Warnf("Could not extract text from JSON response structure")
+			}
+			text = strings.TrimSpace(text)
+			text = strings.TrimPrefix(text, "```markdown")
+			text = strings.TrimPrefix(text, "```md")
+			text = strings.TrimPrefix(text, "```json")
+			text = strings.TrimSuffix(text, "```")
+			finalText := strings.TrimSpace(text)
+			log.Debugf("Returning summary text, final length: %d", len(finalText))
+			return finalText, nil
+		}
+		// Fallback: treat body as text
+		log.Debugf("JSON unmarshal failed, treating response as plain text")
+		t := strings.TrimSpace(string(rawBody))
+		t = strings.TrimPrefix(t, "```markdown")
+		t = strings.TrimPrefix(t, "```md")
+		t = strings.TrimPrefix(t, "```json")
+		t = strings.TrimSuffix(t, "```")
+		finalText := strings.TrimSpace(t)
+		log.Debugf("Returning plain text summary, final length: %d", len(finalText))
+		return finalText, nil
+	default:
+		// Gemini
+		return getGeminiText(prompt, strings.TrimSpace(cfg.GeminiKey), modelName)
+	}
+}
+
+// GetAIResponse routes to the configured AI provider. Defaults to Gemini.
+func GetAIResponse(prompt string, cfg *model.AutoReviewPR) ([]model.ReviewComment, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.AIProvider))
+	// Resolve model and key (generic first, then Gemini-specific, then default model)
+	modelName := strings.TrimSpace(cfg.AIModel)
+	if modelName == "" {
+		modelName = strings.TrimSpace(cfg.GeminiModel)
+	}
+	if modelName == "" {
+		modelName = "gemini-2.5-flash"
+	}
+
+	apiKey := strings.TrimSpace(cfg.AIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.GeminiKey)
+	}
+
+	switch provider {
+	case "self":
+		base := strings.TrimSpace(cfg.SelfAPIBaseURL)
+		if base == "" {
+			log.Error("AI provider is 'self' but selfApiBaseUrl is empty")
+			return nil, fmt.Errorf("selfApiBaseUrl is required when aiProvider=self")
+		}
+		log.Debugf("Using AI provider=self, base=%s, model=%s", base, modelName)
+		return getAIResponseOfSelf(prompt, base, modelName)
+	default:
+		// Gemini
+		log.Debugf("Using AI provider=gemini, model=%s", modelName)
+		return GetAIResponseOfGemini(prompt, apiKey, modelName)
+	}
+}
+
+// getAIResponseOfSelf calls a self-hosted AI API that mimics Gemini's content API.
+// Expected endpoint form: {base}/v1beta/models/{model}
+func getAIResponseOfSelf(prompt string, baseURL, modelName string) ([]model.ReviewComment, error) {
+	base := strings.TrimRight(baseURL, "/")
+	url := fmt.Sprintf("%s/v1beta/models/%s", base, modelName)
+
+	payload := map[string]interface{}{
+		"contents": []map[string]interface{}{{"parts": []map[string]string{{"text": prompt}}}},
+		// Keep generationConfig for compatibility; self API may ignore extra fields
+		"generationConfig": map[string]interface{}{
+			"maxOutputTokens": 8192,
+			"temperature":     0.8,
+			"topP":            0.95,
+		},
+	}
+	b, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(b)))
+	if err != nil {
+		log.Errorf("Failed to call self AI API: %v", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	rawBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		log.Errorf("Failed to read self AI API response body: %v", readErr)
+		return nil, readErr
+	}
+	if resp.StatusCode != 200 {
+		log.Errorf("Self AI API returned status %d, raw body (first 500 chars): %s", resp.StatusCode, string(rawBody)[:min(500, len(rawBody))])
+		return nil, fmt.Errorf("self AI API returned status %d", resp.StatusCode)
+	}
+
+	// Parse successful response (try to follow Gemini schema, but be tolerant)
+	log.Debugf("Self AI raw body (first 500 chars): %s", string(rawBody)[:min(500, len(rawBody))])
+	var result map[string]interface{}
+	if err := json.Unmarshal(rawBody, &result); err != nil {
+		// If body is not JSON object, treat as plain text carrier
+		log.Debugf("Self AI response not a JSON object; will attempt plain text extraction")
+		result = map[string]interface{}{}
+	}
+
+	var text string
+	// Preferred: Gemini-like schema
+	if c, ok := result["candidates"].([]interface{}); ok && len(c) > 0 {
+		if content, ok := c[0].(map[string]interface{})["content"].(map[string]interface{}); ok {
+			if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
+				if t, ok := parts[0].(map[string]interface{})["text"].(string); ok {
+					text = t
+				}
+			}
+		}
+	}
+	// Fallback: some self APIs may just return {"text": "..."}
+	if text == "" {
+		if t, ok := result["text"].(string); ok {
+			text = t
+		}
+	}
+	// Fallback: treat whole body as text
+	if text == "" {
+		text = strings.TrimSpace(string(rawBody))
+	}
+	text = strings.TrimSpace(text)
+	// If response includes a preamble and fenced JSON, extract fenced JSON
+	if strings.Contains(text, "```json") {
+		start := strings.Index(text, "```json")
+		rest := text[start+len("```json"):]
+		if end := strings.Index(rest, "```"); end >= 0 {
+			text = rest[:end]
+		} else {
+			text = rest
+		}
+	}
+	// Remove any lingering fences and trim
+	text = strings.TrimPrefix(text, "```json")
+	text = strings.TrimSuffix(text, "```")
+	text = strings.TrimSpace(text)
+	// If still has preamble, try to slice from first '{' to last '}'
+	if !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
+		if idx := strings.Index(text, "{"); idx >= 0 {
+			candidate := text[idx:]
+			if end := strings.LastIndex(candidate, "}"); end >= 0 {
+				text = candidate[:end+1]
+			}
+		}
+	}
+
+	if text == "" {
+		log.Error("Self AI API returned empty text response")
+		return []model.ReviewComment{}, nil
+	}
+	if !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
+		log.Errorf("Self AI API response is not JSON (first 200 chars): %s", text[:min(200, len(text))])
+		log.Debugf("Self AI extracted text (first 500 chars): %s", text[:min(500, len(text))])
+		return []model.ReviewComment{}, nil
+	}
+
+	// Sanitize control characters inside JSON string literals (e.g., literal tabs)
+	sanitized := escapeControlCharsInJSONString(text)
+	log.Debugf("Parsing self AI API response JSON (length: %d)", len(sanitized))
+
+	var respObj model.ReviewResponse
+	if err := json.Unmarshal([]byte(sanitized), &respObj); err != nil {
+		log.Errorf("Failed to parse JSON from self AI API: %v", err)
+		log.Errorf("Raw AI response (first 500 chars): %s", text[:min(500, len(text))])
+		return []model.ReviewComment{}, nil
+	}
+	var comments []model.ReviewComment
+	for _, r := range respObj.Reviews {
+		anchor := strings.TrimSpace(r.LineText)
+		comments = append(comments, model.ReviewComment{
+			Body:     r.ReviewComment,
+			Path:     "",
 			Position: r.LineNumber,
 			Anchor:   anchor,
 		})

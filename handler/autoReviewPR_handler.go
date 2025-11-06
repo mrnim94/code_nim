@@ -6,11 +6,12 @@ import (
 	"code_nim/log"
 	"code_nim/model"
 	"fmt"
-	"github.com/go-co-op/gocron"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-co-op/gocron"
 )
 
 // Helper function for min operation
@@ -33,7 +34,7 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 	log.Info("Init Review PullRequest Handler")
 
 	s := gocron.NewScheduler(time.UTC)
-	
+
 	// Enable singleton mode to prevent overlapping job executions at the gocron level
 	s.SingletonMode()
 
@@ -47,7 +48,7 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 		}
 		ar.isRunning = true
 		ar.mutex.Unlock()
-		
+
 		// Ensure we reset the running flag when done
 		defer func() {
 			ar.mutex.Lock()
@@ -55,18 +56,18 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			ar.mutex.Unlock()
 			log.Info("Review PR Handler completed - lock released")
 		}()
-		
+
 		startTime := time.Now()
 		log.Infof("Start Review PR Handler for %s/%s (acquired lock)", auto.Workspace, auto.RepoSlug)
 		allPR, err := ar.Bitbucket.FetchAllPullRequests(auto.Username, auto.AppPassword, auto.Workspace, auto.RepoSlug)
 		if err != nil {
-			log.Error("Error rotating session: %v", err)
+			log.Errorf("Error rotating session: %v", err)
 			return err
 		}
 		log.Infof("Fetched %d pull requests for review", len(allPR))
 		for i, pullRequest := range allPR {
 			log.Infof("Processing PR #%d: '%s' by %s", pullRequest.ID, pullRequest.Title, pullRequest.Author.DisplayName)
-			
+
 			// Add small delay between PRs to reduce API load and prevent rate limiting
 			if i > 0 {
 				time.Sleep(2 * time.Second)
@@ -90,49 +91,107 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			log.Infof("Starting review process for PR #%d by %s", pullRequest.ID, pullRequest.Author.DisplayName)
 			comments, err := ar.Bitbucket.FetchPullRequestComments(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
 			if err != nil {
-				log.Error("Error Pull Comments: %v", err)
+				log.Errorf("Error Pull Comments: %v", err)
 				return err
 			}
-			
-			// Check if the user or any of their display names have already commented
-			userCommented := false
-			
+
+			// Check for existing summary and inline review comments independently
+			hasSummary := false
+			hasInlineReview := false
+			existingInlineComments := make(map[string]bool)
+
 			for i2, comment := range comments {
 				log.Debugf("Check Comment of %s - %s in PR : %d - %d", comment.User.Username, comment.User.DisplayName, pullRequest.ID, i2)
-				
-				isUserComment := comment.User.Username == auto.Username
-				if !isUserComment {
-					// Check against all display names
+
+				// Check if this comment is from the configured bot/user
+				isBotComment := comment.User.Username == auto.Username
+				if !isBotComment {
 					for _, displayName := range auto.DisplayNames {
 						if comment.User.DisplayName == displayName {
-							isUserComment = true
+							isBotComment = true
 							break
 						}
 					}
 				}
-				
-				if isUserComment && comment.Content.Raw != "" {
-					log.Debugf("User %s already commented on PR #%d", comment.User.Username, pullRequest.ID)
-					if comment.Inline != nil {
-						log.Debugf("Found existing inline comment at %s:%d", comment.Inline.Path, comment.Inline.To)
-					} else {
-						log.Debugf("Found existing general PR comment")
+
+				if !isBotComment {
+					continue // Only check bot's own comments for summary/inline detection
+				}
+
+				// Detect an already-posted summary in general comments (not inline)
+				if comment.Content.Raw != "" && comment.Inline == nil {
+					lc := strings.ToLower(strings.TrimSpace(comment.Content.Raw))
+					if strings.HasPrefix(lc, "## summary") ||
+						strings.Contains(lc, "summary by ") ||
+						strings.Contains(lc, "- **new features**") ||
+						strings.Contains(lc, "- **bug fixes**") ||
+						strings.Contains(lc, "- **documentation**") ||
+						strings.Contains(lc, "- **refactor**") ||
+						strings.Contains(lc, "- **performance**") ||
+						strings.Contains(lc, "- **tests**") ||
+						strings.Contains(lc, "- **chores**") {
+						hasSummary = true
 					}
-					userCommented = true
-					break // Skip the entire PR if user has made ANY comment (inline or general)
+				}
+
+				// Detect existing inline review comments from the bot
+				if comment.Inline != nil && comment.Content.Raw != "" {
+					lc := strings.ToLower(strings.TrimSpace(comment.Content.Raw))
+					// Check if it's a review comment (contains typical review markers)
+					if strings.Contains(lc, "why:") ||
+						strings.Contains(lc, "how (step-by-step):") ||
+						strings.Contains(lc, "notes:") ||
+						strings.Contains(lc, "suggested change") {
+						hasInlineReview = true
+						// Track specific location to avoid duplicates
+						key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
+						existingInlineComments[key] = true
+						log.Debugf("Found existing inline review at %s:%d", comment.Inline.Path, comment.Inline.To)
+					}
 				}
 			}
-			
-			if userCommented {
-				log.Infof("Skipping PR #%d - user has already reviewed (commented)", pullRequest.ID)
-				continue // Skip review if user already commented anywhere on the PR
-			}
+
+			// Fetch diff for both summary and inline review
 			log.Debugf("Check Diff PR: %d - %d", pullRequest.ID, i)
 			diff, err := ar.Bitbucket.FetchPullRequestDiff(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
 			if err != nil {
-				log.Error("Error rotating session: %v", err)
+				log.Errorf("Error fetching diff: %v", err)
 				return err
 			}
+
+			// STEP 1: Check and post summary comment if it doesn't exist
+			if !hasSummary {
+				log.Infof("No summary found for PR #%d, generating one...", pullRequest.ID)
+				summaryPrompt := helper.CreateSummaryPrompt(&pullRequest, diff)
+				summaryText, sumErr := helper.GetAISummary(summaryPrompt, &auto)
+				if sumErr != nil {
+					log.Errorf("AI summary error for PR #%d: %v", pullRequest.ID, sumErr)
+				} else {
+					trimmedText := strings.TrimSpace(summaryText)
+					log.Debugf("AI summary response length: %d chars (first 100): %s", len(trimmedText), trimmedText[:min(100, len(trimmedText))])
+					if trimmedText != "" {
+						head := "Summary by Nim\n\n"
+						body := head + formatSummaryBody(summaryText)
+						log.Debugf("Posting summary comment with body length: %d", len(body))
+						if err := ar.Bitbucket.PushPullRequestComment(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword, body); err != nil {
+							log.Errorf("Failed to post summary comment: %v", err)
+						} else {
+							log.Infof("✓ Posted summary comment for PR #%d", pullRequest.ID)
+						}
+					} else {
+						log.Warnf("AI returned empty summary text for PR #%d", pullRequest.ID)
+					}
+				}
+			} else {
+				log.Infof("Summary already exists for PR #%d, skipping", pullRequest.ID)
+			}
+
+			// STEP 2: Check and post inline review comments if they don't exist
+			if hasInlineReview {
+				log.Infof("Inline review already exists for PR #%d, skipping", pullRequest.ID)
+				continue // Skip to next PR
+			}
+			log.Infof("No inline review found for PR #%d, generating one...", pullRequest.ID)
 			parsed := ar.Bitbucket.ParseDiff(string(diff))
 			var allComments []model.ReviewComment
 			for _, file := range parsed {
@@ -144,37 +203,29 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					continue
 				}
 				prompt := helper.CreatePrompt(filePath, allLines, &pullRequest)
-				
-				// Use configured model or default to gemini-2.5-flash
-				model := auto.GeminiModel
-				if model == "" {
-					model = "gemini-2.5-flash" // Default model
-					log.Debugf("No model specified in config, using default: %s", model)
-				} else {
-					log.Debugf("Using configured Gemini model: %s", model)
-				}
-				
-				comments, err := helper.GetAIResponseOfGemini(prompt, auto.GeminiKey, model)
-				
+
+				// Call AI provider (Gemini or self) based on configuration
+				comments, err := helper.GetAIResponse(prompt, &auto)
+
 				// Add small delay after Gemini API call to prevent rate limiting
 				time.Sleep(1 * time.Second)
-				
+
 				if err != nil {
 					log.Errorf("AI error for file %s in PR #%d: %v", filePath, pullRequest.ID, err)
-					
+
 					// Check if it's a rate limit error and provide specific guidance
 					errStr := err.Error()
 					if strings.Contains(errStr, "rate limit exceeded") {
-						log.Errorf("Rate limit hit for PR #%d. Consider:")
+						log.Errorf("Rate limit hit for PR #%d. Consider:", pullRequest.ID)
 						log.Error("  1. Reducing the number of PRs processed per run")
-						log.Error("  2. Adding delays between API calls")
-						log.Error("  3. Upgrading your Gemini API plan")
+						log.Error("  2. Adding delays between AI calls")
+						log.Error("  3. Upgrading your AI provider plan or quotas")
 						log.Error("  4. Processing only smaller PRs to reduce token usage")
 						// Consider breaking the loop if rate limited to avoid more failures
 						log.Infof("Skipping remaining files for PR #%d due to rate limit", pullRequest.ID)
 						break // Skip remaining files for this PR
 					}
-					
+
 					log.Debugf("Prompt that caused the error (first 200 chars): %s", prompt[:min(200, len(prompt))])
 					continue
 				}
@@ -218,14 +269,19 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			}
 			if len(filteredComments) > 0 {
 				fmt.Printf("Comments: %+v\n", filteredComments)
+				postedCount := 0
 				for _, comment := range filteredComments {
 					if comment.Path == "" || comment.Position <= 0 {
 						continue
 					}
-					
-					// Since we skip entire PRs where user has already commented,
-					// we don't need to check for existing inline comments here
-					
+
+					// Check if we already have a comment at this exact location
+					key := fmt.Sprintf("%s:%d", comment.Path, comment.Position)
+					if existingInlineComments[key] {
+						log.Debugf("Skipping duplicate inline comment at %s", key)
+						continue
+					}
+
 					// Ensure section headings like Why/How render on their own lines
 					formattedBody := formatReviewBody(comment.Body)
 					err := ar.Bitbucket.PushPullRequestInlineComment(
@@ -241,8 +297,12 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					if err != nil {
 						log.Errorf("Failed to post inline comment: %v", err)
 					} else {
-						log.Debugf("Posted new inline comment on %s at line %d", comment.Path, comment.Position)
+						log.Debugf("✓ Posted inline comment on %s at line %d", comment.Path, comment.Position)
+						postedCount++
 					}
+				}
+				if postedCount > 0 {
+					log.Infof("✓ Posted %d inline review comments for PR #%d", postedCount, pullRequest.ID)
 				}
 			}
 		}
@@ -378,7 +438,7 @@ func formatReviewBody(body string) string {
 	if body == "" {
 		return body
 	}
-	
+
 	// List of headings that should start on new paragraphs
 	headings := []string{
 		"Why:",
@@ -386,41 +446,85 @@ func formatReviewBody(body string) string {
 		"Suggested change (Before/After):",
 		"Notes:",
 	}
-	
+
 	formatted := body
-	
+
 	// Use double newlines for proper markdown paragraph breaks
 	for _, heading := range headings {
 		// Replace " Heading:" with proper paragraph break
 		spacedHeading := " " + heading
 		properHeading := "\n\n" + heading
 		formatted = strings.ReplaceAll(formatted, spacedHeading, properHeading)
-		
+
 		// Handle cases where heading appears without preceding space
 		// but avoid double-replacing already formatted headings
 		if !strings.Contains(formatted, properHeading) {
 			formatted = strings.ReplaceAll(formatted, heading, properHeading)
 		}
 	}
-	
+
 	// Clean up excessive newlines (more than 2 consecutive)
 	for strings.Contains(formatted, "\n\n\n") {
 		formatted = strings.ReplaceAll(formatted, "\n\n\n", "\n\n")
 	}
-	
+
 	// Remove leading newlines if they exist
 	formatted = strings.TrimLeft(formatted, "\n")
-	
+
 	// Ensure proper spacing after colons and before bullets
 	formatted = strings.ReplaceAll(formatted, ":\n  -", ":\n\n  -")
 	formatted = strings.ReplaceAll(formatted, ":\n-", ":\n\n-")
-	
+
 	// Improve code block formatting with proper spacing
 	formatted = strings.ReplaceAll(formatted, "~~~go\n//", "~~~go\n\n//")
 	formatted = strings.ReplaceAll(formatted, "~~~\n~~~", "~~~\n\n~~~")
-	
+
 	// Ensure proper spacing around code blocks
 	formatted = strings.ReplaceAll(formatted, "):\n~~~", "):\n\n~~~")
-	
+
+	return formatted
+}
+
+// formatSummaryBody enforces newlines around headers and bullets for PR summary
+func formatSummaryBody(body string) string {
+	if body == "" {
+		return body
+	}
+	formatted := strings.ReplaceAll(body, "\r\n", "\n")
+	headers := []string{
+		"**New Features**",
+		"**Bug Fixes**",
+		"**Documentation**",
+		"**Refactor**",
+		"**Performance**",
+		"**Tests**",
+		"**Chores**",
+	}
+	// Ensure each header stands alone and followed by a blank line
+	for _, h := range headers {
+		// cases like "**Header** -" or "**Header**-" -> header + blank line + "-"
+		formatted = strings.ReplaceAll(formatted, h+" - ", h+"\n\n- ")
+		formatted = strings.ReplaceAll(formatted, h+"- ", h+"\n\n- ")
+		formatted = strings.ReplaceAll(formatted, h+" -", h+"\n\n- ")
+		// if header is followed immediately by text, force newline
+		formatted = strings.ReplaceAll(formatted, h+" ", h+"\n\n")
+	}
+	// Handle plain (non-bold) headers that AI may emit like "New Features - ..."
+	plain := []string{"New Features", "Bug Fixes", "Documentation", "Refactor", "Performance", "Tests", "Chores"}
+	for _, h := range plain {
+		// Convert inline header+bullet to bold header on its own line then bullet list
+		formatted = strings.ReplaceAll(formatted, h+" - ", "**"+h+"**\n\n- ")
+		formatted = strings.ReplaceAll(formatted, h+"- ", "**"+h+"**\n\n- ")
+		formatted = strings.ReplaceAll(formatted, h+": - ", "**"+h+"**\n\n- ")
+		formatted = strings.ReplaceAll(formatted, h+": ", "**"+h+"**\n\n")
+		// If header followed by text without dash, still break line
+		formatted = strings.ReplaceAll(formatted, h+" ", "**"+h+"**\n\n")
+	}
+	// Convert inline bullet separators " - " to real newlines
+	formatted = strings.ReplaceAll(formatted, " - ", "\n- ")
+	// Collapse triple blank lines
+	for strings.Contains(formatted, "\n\n\n") {
+		formatted = strings.ReplaceAll(formatted, "\n\n\n", "\n\n")
+	}
 	return formatted
 }
