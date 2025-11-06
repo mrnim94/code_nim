@@ -1,6 +1,33 @@
-# code-nim
+# code-nim 🤖
 
-An enterprise-ready automated Pull Request reviewer for Bitbucket using Google's Gemini AI. It periodically scans configured repositories, fetches open PRs, generates structured AI review comments from diffs, and posts them back to Bitbucket with advanced concurrency protection and duplicate prevention. Built with Go, Echo, Logrus, and gocron.
+An enterprise-ready automated Pull Request reviewer for Bitbucket using AI (Google Gemini or Self-Hosted). It periodically scans configured repositories, fetches open PRs, generates **two types of intelligent reviews**, and posts them back to Bitbucket with advanced concurrency protection and duplicate prevention.
+
+## 📸 What It Looks Like
+
+### 📝 Summary Comment (CodeRabbit-Style)
+AI-generated PR overview with grouped insights, walkthrough, and changes table:
+
+![Summary Comment Example](docs/img/2025-11-07_01-14.png)
+
+### 💬 Inline Review Comments
+Detailed code-level feedback posted directly on specific lines:
+
+![Inline Comment Example](docs/img/2025-11-07_00-38.png)
+
+**Built with Go, Echo, Logrus, and gocron.**
+
+## ✨ Key Highlights
+
+| Feature | Description |
+|---------|-------------|
+| 🎯 **Dual Review System** | Summary comment + inline reviews, tracked independently |
+| 🤖 **Flexible AI** | Google Gemini OR self-hosted AI (Claude, GPT, LLaMA, etc.) |
+| 🔒 **Zero Duplicates** | Smart detection prevents duplicate summaries and inline comments |
+| ⚡ **Concurrency Safe** | Mutex + SingletonMode prevents race conditions |
+| 📊 **CodeRabbit Style** | Beautiful formatted summaries with sections and tables |
+| 🎨 **Rich Formatting** | Proper Markdown rendering with Why/How/Notes structure |
+| 🚫 **Author Filtering** | Skip PRs from specific developers or bots |
+| 📈 **Production Ready** | Comprehensive logging, error handling, and monitoring |
 
 ## 🧪 Quickstart (2 minutes)
 
@@ -83,13 +110,30 @@ That’s it. The reviewer will periodically scan PRs, generate suggestions, and 
 
 ## 🚀 Features
 
+### 🎯 Two Types of AI Reviews
+
+#### 1. **Summary Comment** (CodeRabbit-Style)
+- **📊 Structured Overview**: Automatically categorizes changes into New Features, Bug Fixes, Chores, etc.
+- **🚶 Walkthrough**: Natural language explanation of what the PR accomplishes
+- **📋 Changes Table**: Cohort/File mapping with change summaries
+- **🔄 Sequence Flow**: Optional flow diagram for complex changes
+- **🎨 Beautiful Formatting**: Clean Markdown with proper sections and bullets
+
+#### 2. **Inline Review Comments**
+- **📍 Line-specific feedback**: Posted directly on changed code lines
+- **🔍 Structured analysis**: Each comment includes:
+  - **Why**: Explanation of the issue or concern
+  - **How (step-by-step)**: Actionable remediation steps
+  - **Suggested change (Before/After)**: Code examples when applicable
+  - **Notes**: Additional context and best practices
+
 ### Core Functionality
 - **🔍 Bitbucket PR scanning**: Lists open PRs for configured repositories with pagination support
 - **📝 Advanced diff parsing**: Parses PR diffs per file and hunk with accurate line mapping
-- **🤖 AI reviews with Gemini**: Crafts structured review prompts and parses JSON responses into actionable comments
-- **🔒 Intelligent duplicate prevention**: Skips PRs where configured users have already commented (inline or general)
-- **👥 Author filtering**: Ignore PRs from specific authors (useful for skipping senior developers or specific team members)
-- **📌 Precise inline comments**: Posts AI-generated comments directly on specific lines in the code diff with anchor-based positioning
+- **🤖 Dual AI support**: Works with Google Gemini **OR** self-hosted AI APIs (OpenAI-compatible)
+- **🔒 Intelligent duplicate prevention**: Independently tracks summary and inline comments to avoid duplication
+- **👥 Author filtering**: Ignore PRs from specific authors (useful for skipping senior developers or bots)
+- **📌 Precise inline comments**: Posts AI-generated comments directly on specific lines with anchor-based positioning
 
 ### Advanced Features
 - **⚡ Concurrency protection**: Mutex locking and gocron SingletonMode prevent race conditions and duplicate reviews
@@ -111,7 +155,9 @@ That’s it. The reviewer will periodically scan PRs, generate suggestions, and 
 
 - Go 1.23+
 - Bitbucket account with an App Password that can read PRs and post comments
-- Google Generative Language API key (Gemini)
+- **AI Provider** (choose one):
+  - Google Generative Language API key (Gemini), **OR**
+  - Self-hosted AI API endpoint (OpenAI-compatible format)
 
 ## 🚀 Quick Start
 
@@ -183,14 +229,27 @@ autoReviewPR:
 | `repoSlug` | Repository slug | ✅ |
 | `displayNames` | Display names that count as "already reviewed" | ✅ |
 | `username/appPassword` | Bitbucket Basic Auth credentials | ✅ |
-| `geminiKey` | API key for Gemini models | ✅ |
+| **AI Provider (Gemini)** | | |
+| `geminiKey` | API key for Gemini models | ✅ (if using Gemini) |
 | `geminiModel` | Specific Gemini model (defaults to `gemini-2.5-flash`) | ❌ |
+| **AI Provider (Self-Hosted)** | | |
+| `aiProvider` | Set to `self` for self-hosted AI | ✅ (if using self-hosted) |
+| `aiModel` | Model name for your self-hosted API | ✅ (if using self-hosted) |
+| `selfApiBaseUrl` | Base URL of your AI API (e.g., `http://127.0.0.1:1994`) | ✅ (if using self-hosted) |
+| **Other** | | |
 | `ignorePullRequestOf.displayNames` | Authors whose PRs should be ignored | ❌ |
 
-### Available Gemini Models
+### Available AI Providers
+
+#### **Google Gemini** (Default)
 - `gemini-1.5-flash` - Fast, cost-effective
 - `gemini-1.5-pro` - Higher quality, slower
 - `gemini-2.5-flash` - Latest fast model (default)
+
+#### **Self-Hosted AI**
+- Any OpenAI-compatible API endpoint
+- Examples: Claude, GPT, LLaMA, Mistral, or custom models
+- No API key required (optional authentication via your API)
 
 **⚠️ SECURITY WARNING**: Never commit real credentials to version control! Use environment variables or a secrets management system in production.
 
@@ -212,21 +271,40 @@ autoReviewPR:
 - ⚡ **gocron SingletonMode**: Additional scheduler-level protection against overlapping jobs
 - ⏱️ **Execution timing**: Monitors and logs how long each review cycle takes
 
-#### **PR Processing Pipeline**
+#### **PR Processing Pipeline (Two-Phase Approach)**
+
+**Phase 1: Summary Comment Generation**
 1. **Fetch PRs**: Retrieves all open pull requests from configured repository
 2. **Author filtering**: Checks if PR author is in ignore list and skips if found
-3. **Duplicate detection**: Scans existing comments to see if user already reviewed (inline or general comments)
-4. **Rate limiting**: Adds delays between PR processing and API calls
-5. **Diff analysis**: Fetches and parses PR diffs with accurate line mapping
-6. **AI review generation**: Calls Gemini with structured prompts per file
-7. **Comment filtering**: Removes command-like responses and empty comments  
-8. **Inline posting**: Posts formatted comments to specific diff lines
-9. **Error recovery**: Gracefully handles failures and continues processing
+3. **Check existing summary**: Scans for existing "Summary by Nim" comment
+4. **Generate summary** (if missing): Calls AI with full PR context to create CodeRabbit-style overview
+5. **Post summary**: Formats and posts structured summary with sections (New Features, Walkthrough, Changes, etc.)
+
+![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_01-14.png)
+
+**Phase 2: Inline Review Generation**
+6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers
+7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping
+8. **AI review generation**: Calls AI with structured prompts per file
+9. **Comment filtering**: Removes command-like responses and empty comments
+10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments
+11. **Inline posting**: Posts formatted comments to specific diff lines
+12. **Error recovery**: Gracefully handles failures and continues processing
+
+![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_00-38.png)
+
+#### **Independent Comment Tracking**
+- ✅ **Summary comments** are checked and posted independently
+- ✅ **Inline review comments** are checked and posted independently
+- ✅ Each type can exist without the other
+- ✅ Prevents duplicate posting of either type
 
 #### **AI Review Generation**
-- **Structured prompts**: Creates detailed prompts with PR context, file paths, and diffs
-- **CodeRabbit-style reviews**: Generates comments with severity levels, categories, and structured feedback
-- **Multiple formats**: Supports various code languages and file types
+- **Two prompt types**: Separate prompts for summary vs. inline reviews
+- **Summary prompt**: Focuses on high-level overview, categorization, and change impact
+- **Inline prompt**: Detailed code analysis with structured feedback (Why/How/Notes)
+- **CodeRabbit-style formatting**: Beautiful Markdown with proper sections and bullets
+- **Multiple AI providers**: Works with Gemini or self-hosted APIs
 - **Context-aware**: Considers PR title, description, and overall change patterns
 
 ### 3. Architecture Components
@@ -261,21 +339,34 @@ Override `LOG_LEVEL` with: `DEBUG`, `INFO`, `WARN`, `ERROR`, `OFF`
 
 ### Log Examples
 
-**Successful Processing:**
+**Successful Processing (Two-Phase):**
 ```
 INFO: Review PR Handler for workspace/repo (acquired lock)
 INFO: Fetched 3 pull requests for review  
-INFO: Processing PR #1953: 'Add oesis engine configuration' by Developer Name
-DEBUG: Found existing inline comment at app-engines.yaml:126
-INFO: Skipping PR #1953 - user has already reviewed (commented)
-INFO: Review PR Handler completed for workspace/repo in 2.5s
+INFO: Processing PR #2003: 'Update secret configuration' by Developer Name
+INFO: No summary found for PR #2003, generating one...
+DEBUG: Getting AI summary for provider: self and model sonnet-4.5-thinking
+DEBUG: AI summary response length: 1247 chars
+INFO: ✓ Posted summary comment for PR #2003
+INFO: No inline review found for PR #2003, generating one...
+DEBUG: Check File path config/secrets.yaml
+DEBUG: ✓ Posted inline comment on config/secrets.yaml at line 126
+INFO: ✓ Posted 3 inline review comments for PR #2003
+INFO: Review PR Handler completed for workspace/repo in 8.2s
+```
+
+**Skipping Already Reviewed PRs:**
+```
+INFO: Processing PR #1953: 'Add engine configuration' by Developer Name
+INFO: Summary already exists for PR #1953, skipping
+INFO: Inline review already exists for PR #1953, skipping
 ```
 
 **Error Handling:**
 ```
-ERROR: Gemini API rate limit exceeded: Quota exceeded for requests per minute
+ERROR: AI summary error for PR #2005: rate limit exceeded
 ERROR: Please check your API quota and billing details
-INFO: Skipping remaining files for PR #1945 due to rate limit
+INFO: Skipping remaining files for PR #2005 due to rate limit
 ```
 
 **Concurrency Protection:**
@@ -316,10 +407,13 @@ INFO: Skipping review execution - another review process is already running for 
 | Issue | Symptoms | Solution |
 |-------|----------|----------|
 | **No comments posted** | Reviews run but no Bitbucket comments appear | Check App Password has comment permissions |
-| **Rate limiting** | `429` errors in logs | Increase cron intervals, check API quotas |
-| **Authentication failures** | `401/403` errors | Verify Bitbucket credentials and Gemini API key |
+| **Summary not posted** | Inline comments work but no summary | Check logs for "AI summary error" or "empty summary text" |
+| **Inline comments missing** | Summary posted but no inline reviews | Check logs for "hasInlineReview" detection or AI errors |
+| **Rate limiting** | `429` errors in logs | Increase cron intervals, check AI provider quotas |
+| **Authentication failures** | `401/403` errors | Verify Bitbucket credentials and AI API key/endpoint |
 | **PRs not ignored** | Reviews posted on ignored authors | Ensure display names match exactly (case-sensitive) |
-| **Duplicate comments** | Same comment posted multiple times | Check for concurrency issues, restart service |
+| **Duplicate summaries** | Multiple "Summary by Nim" comments | Check `hasSummary` detection logic, restart service |
+| **Self-hosted AI fails** | "Self API HTTP error" in logs | Verify `selfApiBaseUrl` is reachable and model name is correct |
 | **Large diffs ignored** | No comments on big PRs | Expected behavior - AI skips overly large changes |
 
 ### **Debug Steps**
@@ -398,6 +492,31 @@ docker run -d --name code-nim \
 - **Backup**: Regular backup of configuration files and logs
 - **Scaling**: Run multiple instances with different repository configurations
 
+## 🎯 What Makes code-nim Special?
+
+### **Two Independent Review Types**
+Unlike traditional PR bots that only post inline comments, code-nim provides:
+1. **High-level summary** (like CodeRabbit) - Perfect for reviewers to quickly understand the PR
+2. **Detailed inline reviews** - Specific, actionable feedback on code changes
+
+Both types are tracked independently, so you can have one without the other, and neither will duplicate.
+
+### **Flexible AI Provider**
+- **Google Gemini**: Fast, reliable, and cost-effective
+- **Self-Hosted AI**: Full control, privacy, and support for Claude, GPT, LLaMA, Mistral, or custom models
+
+### **Production-Grade Reliability**
+- ✅ Concurrency protection prevents race conditions
+- ✅ Intelligent duplicate detection for both comment types
+- ✅ Comprehensive error handling and recovery
+- ✅ Detailed logging for debugging and monitoring
+- ✅ Rate limit protection with automatic delays
+
+### **Beautiful Formatting**
+- 📊 Summary comments with proper sections, bullets, and tables
+- 📝 Inline comments with structured Why/How/Notes format
+- 🎨 Clean Markdown rendering in Bitbucket
+
 ## 📄 License
 
 Apache License 2.0. See `LICENSE`.
@@ -405,3 +524,5 @@ Apache License 2.0. See `LICENSE`.
 ---
 
 **Built with ❤️ for better code reviews**
+
+*Star ⭐ this repo if you find it useful!*
