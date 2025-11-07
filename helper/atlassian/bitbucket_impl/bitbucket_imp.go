@@ -47,7 +47,7 @@ func (hc *HttpClient) FetchAllPullRequests(username, appPassword, workspace, rep
 	}
 
 	// Print the raw response (useful for debugging)
-	log.Debug("Raw API Response:", string(rawBody))
+	//log.Debug("Raw API Response:", string(rawBody))
 
 	// You can also use an anonymous struct if you prefer
 	var result struct {
@@ -72,7 +72,7 @@ func (hc *HttpClient) FetchAllPullRequests(username, appPassword, workspace, rep
 func (hc *HttpClient) FetchPullRequestDiff(prID int, workspace, repoSlug, username, appPassword string) (string, error) {
 	// Construct the API URL to get the diff for a specific pull request
 	diffAPIURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/diff", workspace, repoSlug, prID)
-	log.Debugf("Fetching diff from URL: %s\n", diffAPIURL) // Debugging line
+	log.Debugf("Fetching diff from URL: %s", diffAPIURL) // Debugging line
 
 	req, err := http.NewRequest("GET", diffAPIURL, nil)
 	if err != nil {
@@ -98,7 +98,7 @@ func (hc *HttpClient) FetchPullRequestDiff(prID int, workspace, repoSlug, userna
 		log.Error(err)
 		return "", err
 	}
-	log.Debug("Raw API Response:", string(rawBody))
+	//log.Debug("Raw API Response:", string(rawBody))
 	return string(rawBody), nil
 }
 
@@ -131,7 +131,7 @@ func (hc *HttpClient) ParseDiff(diff string) []map[string]interface{} {
 	if currentFile != nil {
 		files = append(files, currentFile)
 	}
-	log.Debug("Diff Files:", files)
+	//log.Debug("Diff Files:", files)
 	return files
 }
 
@@ -228,45 +228,45 @@ func (hc *HttpClient) PushPullRequestComment(prID int, workspace, repoSlug, user
 
 // PushPullRequestInlineComment posts a comment on a specific file and destination line in the PR
 func (hc *HttpClient) PushPullRequestInlineComment(prID int, workspace, repoSlug, username, appPassword, path string, line int, content string) error {
-    apiURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/comments", workspace, repoSlug, prID)
-    log.Debugf("Posting inline comment to URL: %s", apiURL)
+	apiURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/comments", workspace, repoSlug, prID)
+	log.Debugf("Posting inline comment to URL: %s", apiURL)
 
-    payload := map[string]interface{}{
-        "content": map[string]string{
-            "raw": content,
-        },
-        "inline": map[string]interface{}{
-            "path": path,
-            "to":   line, // destination line in the diff
-        },
-    }
-    body, err := json.Marshal(payload)
-    if err != nil {
-        log.Error(err)
-        return err
-    }
+	payload := map[string]interface{}{
+		"content": map[string]string{
+			"raw": content,
+		},
+		"inline": map[string]interface{}{
+			"path": path,
+			"to":   line, // destination line in the diff
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
 
-    req, err := http.NewRequest("POST", apiURL, strings.NewReader(string(body)))
-    if err != nil {
-        log.Error(err)
-        return err
-    }
-    req.Header.Set("Content-Type", "application/json")
-    req.SetBasicAuth(username, appPassword)
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(string(body)))
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(username, appPassword)
 
-    resp, err := hc.http.Do(req)
-    if err != nil {
-        log.Error(err)
-        return err
-    }
-    defer resp.Body.Close()
+	resp, err := hc.http.Do(req)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+	defer resp.Body.Close()
 
-    if resp.StatusCode != 201 {
-        rawBody, _ := io.ReadAll(resp.Body)
-        log.Errorf("Failed to post inline comment. Status: %d, Body: %s", resp.StatusCode, string(rawBody))
-        return fmt.Errorf("failed to post inline comment, status: %d", resp.StatusCode)
-    }
+	if resp.StatusCode != 201 {
+		rawBody, _ := io.ReadAll(resp.Body)
+		log.Errorf("Failed to post inline comment. Status: %d, Body: %s", resp.StatusCode, string(rawBody))
+		return fmt.Errorf("failed to post inline comment, status: %d", resp.StatusCode)
+	}
 
-    log.Debug("Inline comment posted successfully")
-    return nil
+	log.Debug("Inline comment posted successfully")
+	return nil
 }

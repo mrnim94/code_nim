@@ -74,6 +74,9 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				log.Debugf("Added delay before processing PR #%d", pullRequest.ID)
 			}
 
+			// Summary-only mode flag: when true, we will generate summary but skip inline review
+			skipInlineByDisplayName := false
+
 			ignorePROfName := false
 			for _, displayNameConfig := range auto.IgnorePullRequestOf.DisplayNames {
 				log.Debugf("Checking if PR author '%s' matches ignore list entry '%s'", pullRequest.Author.DisplayName, displayNameConfig)
@@ -84,8 +87,8 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				}
 			}
 			if ignorePROfName {
-				log.Infof("Skipping PR #%d (author is in ignore list)", pullRequest.ID)
-				continue
+				log.Infof("Author is in ignore list → summary-only mode for PR #%d", pullRequest.ID)
+				skipInlineByDisplayName = true
 			}
 
 			log.Infof("Starting review process for PR #%d by %s", pullRequest.ID, pullRequest.Author.DisplayName)
@@ -103,19 +106,13 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			for i2, comment := range comments {
 				log.Debugf("Check Comment of %s - %s in PR : %d - %d", comment.User.Username, comment.User.DisplayName, pullRequest.ID, i2)
 
-				// Check if this comment is from the configured bot/user
-				isBotComment := comment.User.Username == auto.Username
-				if !isBotComment {
-					for _, displayName := range auto.DisplayNames {
-						if comment.User.DisplayName == displayName {
-							isBotComment = true
-							break
-						}
+				// If a reviewer in configured displayNames commented anywhere, we skip inline review later
+				for _, dn := range auto.DisplayNames {
+					if comment.User.DisplayName == dn {
+						skipInlineByDisplayName = true
+						log.Debugf("Reviewer displayName matched (%s); will skip inline review", dn)
+						break
 					}
-				}
-
-				if !isBotComment {
-					continue // Only check bot's own comments for summary/inline detection
 				}
 
 				// Detect an already-posted summary in general comments (not inline)
@@ -134,20 +131,14 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					}
 				}
 
-				// Detect existing inline review comments from the bot
-				if comment.Inline != nil && comment.Content.Raw != "" {
-					lc := strings.ToLower(strings.TrimSpace(comment.Content.Raw))
-					// Check if it's a review comment (contains typical review markers)
-					if strings.Contains(lc, "why:") ||
-						strings.Contains(lc, "how (step-by-step):") ||
-						strings.Contains(lc, "notes:") ||
-						strings.Contains(lc, "suggested change") {
-						hasInlineReview = true
-						// Track specific location to avoid duplicates
-						key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
-						existingInlineComments[key] = true
-						log.Debugf("Found existing inline review at %s:%d", comment.Inline.Path, comment.Inline.To)
-					}
+				// Detect existing inline review comments from the bot/displayNames
+				// Combine: if it's an inline comment authored by the bot (by username or any displayNames),
+				// we consider it an existing inline review regardless of body markers.
+				if comment.Inline != nil {
+					hasInlineReview = true
+					key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
+					existingInlineComments[key] = true
+					log.Debugf("Found existing inline review (by bot/displayName) at %s:%d", comment.Inline.Path, comment.Inline.To)
 				}
 			}
 
@@ -160,151 +151,10 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			}
 
 			// STEP 1: Check and post summary comment if it doesn't exist
-			if !hasSummary {
-				log.Infof("No summary found for PR #%d, generating one...", pullRequest.ID)
-				summaryPrompt := helper.CreateSummaryPrompt(&pullRequest, diff)
-				summaryText, sumErr := helper.GetAISummary(summaryPrompt, &auto)
-				if sumErr != nil {
-					log.Errorf("AI summary error for PR #%d: %v", pullRequest.ID, sumErr)
-				} else {
-					trimmedText := strings.TrimSpace(summaryText)
-					log.Debugf("AI summary response length: %d chars (first 100): %s", len(trimmedText), trimmedText[:min(100, len(trimmedText))])
-					if trimmedText != "" {
-						head := "Summary by Nim\n\n"
-						body := head + formatSummaryBody(summaryText)
-						log.Debugf("Posting summary comment with body length: %d", len(body))
-						if err := ar.Bitbucket.PushPullRequestComment(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword, body); err != nil {
-							log.Errorf("Failed to post summary comment: %v", err)
-						} else {
-							log.Infof("✓ Posted summary comment for PR #%d", pullRequest.ID)
-						}
-					} else {
-						log.Warnf("AI returned empty summary text for PR #%d", pullRequest.ID)
-					}
-				}
-			} else {
-				log.Infof("Summary already exists for PR #%d, skipping", pullRequest.ID)
-			}
+			_, _ = ar.ensureSummaryComment(&auto, &pullRequest, diff, hasSummary)
 
-			// STEP 2: Check and post inline review comments if they don't exist
-			if hasInlineReview {
-				log.Infof("Inline review already exists for PR #%d, skipping", pullRequest.ID)
-				continue // Skip to next PR
-			}
-			log.Infof("No inline review found for PR #%d, generating one...", pullRequest.ID)
-			parsed := ar.Bitbucket.ParseDiff(string(diff))
-			var allComments []model.ReviewComment
-			for _, file := range parsed {
-				filePath := file["path"].(string)
-				log.Debugf("Check File path %s", filePath)
-				hunks := file["hunks"].([]map[string]interface{})
-				allLines, toLineMap := buildDiffSnippetAndLineMap(hunks)
-				if len(allLines) == 0 {
-					continue
-				}
-				prompt := helper.CreatePrompt(filePath, allLines, &pullRequest)
-
-				// Call AI provider (Gemini or self) based on configuration
-				comments, err := helper.GetAIResponse(prompt, &auto)
-
-				// Add small delay after Gemini API call to prevent rate limiting
-				time.Sleep(1 * time.Second)
-
-				if err != nil {
-					log.Errorf("AI error for file %s in PR #%d: %v", filePath, pullRequest.ID, err)
-
-					// Check if it's a rate limit error and provide specific guidance
-					errStr := err.Error()
-					if strings.Contains(errStr, "rate limit exceeded") {
-						log.Errorf("Rate limit hit for PR #%d. Consider:", pullRequest.ID)
-						log.Error("  1. Reducing the number of PRs processed per run")
-						log.Error("  2. Adding delays between AI calls")
-						log.Error("  3. Upgrading your AI provider plan or quotas")
-						log.Error("  4. Processing only smaller PRs to reduce token usage")
-						// Consider breaking the loop if rate limited to avoid more failures
-						log.Infof("Skipping remaining files for PR #%d due to rate limit", pullRequest.ID)
-						break // Skip remaining files for this PR
-					}
-
-					log.Debugf("Prompt that caused the error (first 200 chars): %s", prompt[:min(200, len(prompt))])
-					continue
-				}
-				for i := range comments {
-					// Use anchor text to correct the index if present
-					if comments[i].Anchor != "" {
-						idx := nearestMatchingLineIndex(allLines, comments[i].Anchor, comments[i].Position-1)
-						if idx >= 0 && idx < len(toLineMap) {
-							comments[i].Position = idx + 1
-						}
-					}
-					// Map AI diff index (1-based within provided snippet) to destination file line
-					if comments[i].Position <= 0 || comments[i].Position > len(toLineMap) {
-						log.Debugf("Skip comment with out-of-range position %d for file %s", comments[i].Position, filePath)
-						comments[i].Position = 0
-						continue
-					}
-					mapped := toLineMap[comments[i].Position-1]
-					if mapped <= 0 {
-						// Deleted lines have no destination; skip
-						log.Debugf("Skip comment on deleted line (no destination) at diff idx %d for file %s", comments[i].Position, filePath)
-						comments[i].Position = 0
-						continue
-					}
-					comments[i].Path = filePath
-					comments[i].Position = mapped
-				}
-				allComments = append(allComments, comments...)
-			}
-			// Filter comments: no empty body and no command-like content
-			filteredComments := make([]model.ReviewComment, 0, len(allComments))
-			for _, comment := range allComments {
-				if comment.Body == "" {
-					continue
-				}
-				// Simple check for command-like content (e.g., lines starting with $ or common shell commands)
-				if looksLikeCommand(comment.Body) {
-					continue
-				}
-				filteredComments = append(filteredComments, comment)
-			}
-			if len(filteredComments) > 0 {
-				fmt.Printf("Comments: %+v\n", filteredComments)
-				postedCount := 0
-				for _, comment := range filteredComments {
-					if comment.Path == "" || comment.Position <= 0 {
-						continue
-					}
-
-					// Check if we already have a comment at this exact location
-					key := fmt.Sprintf("%s:%d", comment.Path, comment.Position)
-					if existingInlineComments[key] {
-						log.Debugf("Skipping duplicate inline comment at %s", key)
-						continue
-					}
-
-					// Ensure section headings like Why/How render on their own lines
-					formattedBody := formatReviewBody(comment.Body)
-					err := ar.Bitbucket.PushPullRequestInlineComment(
-						pullRequest.ID,
-						auto.Workspace,
-						auto.RepoSlug,
-						auto.Username,
-						auto.AppPassword,
-						comment.Path,
-						comment.Position,
-						formattedBody,
-					)
-					if err != nil {
-						log.Errorf("Failed to post inline comment: %v", err)
-					} else {
-						log.Debugf("✓ Posted inline comment on %s at line %d", comment.Path, comment.Position)
-						postedCount++
-					}
-				}
-				if postedCount > 0 {
-					log.Infof("✓ Posted %d inline review comments for PR #%d", postedCount, pullRequest.ID)
-				}
-			}
+			// STEP 2: Check and post inline review comments if they don't exist (delegated)
+			_, _ = ar.ensureInlineReviewComments(&auto, &pullRequest, diff, existingInlineComments, skipInlineByDisplayName, hasInlineReview)
 		}
 
 		duration := time.Since(startTime)
