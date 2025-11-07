@@ -237,7 +237,7 @@ autoReviewPR:
 | `aiModel` | Model name for your self-hosted API | ✅ (if using self-hosted) |
 | `selfApiBaseUrl` | Base URL of your AI API (e.g., `http://127.0.0.1:1994`) | ✅ (if using self-hosted) |
 | **Other** | | |
-| `ignorePullRequestOf.displayNames` | Authors whose PRs should be ignored | ❌ |
+| `ignorePullRequestOf.displayNames` | Authors whose PRs should be summary-only (no inline review) | ❌ |
 
 ### Available AI Providers
 
@@ -275,21 +275,21 @@ autoReviewPR:
 
 **Phase 1: Summary Comment Generation**
 1. **Fetch PRs**: Retrieves all open pull requests from configured repository
-2. **Author filtering**: Checks if PR author is in ignore list and skips if found
+2. **Author filtering**: If PR author is in ignore list, enters summary-only mode (skips inline review)
 3. **Check existing summary**: Scans for existing "Summary by Nim" comment
 4. **Generate summary** (if missing): Calls AI with full PR context to create CodeRabbit-style overview
 5. **Post summary**: Formats and posts structured summary with sections (New Features, Walkthrough, Changes, etc.)
 
 ![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_01-14.png)
 
-**Phase 2: Inline Review Generation**  
-6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers  
-7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping  
-8. **AI review generation**: Calls AI with structured prompts per file  
-9. **Comment filtering**: Removes command-like responses and empty comments  
-10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments  
-11. **Inline posting**: Posts formatted comments to specific diff lines  
-12. **Error recovery**: Gracefully handles failures and continues processing  
+**Phase 2: Inline Review Generation**
+6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers
+7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping
+8. **AI review generation**: Calls AI with structured prompts per file
+9. **Comment filtering**: Removes command-like responses and empty comments
+10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments
+11. **Inline posting**: Posts formatted comments to specific diff lines
+12. **Error recovery**: Gracefully handles failures and continues processing
 
 ![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_00-38.png)
 
@@ -311,6 +311,7 @@ autoReviewPR:
 
 #### **Core Modules**
 - `handler/autoReviewPR_handler.go`: Main orchestration and concurrency control
+- `handler/commentTypes_handler.go`: Summary and inline review logic (`ensureSummaryComment`, `ensureInlineReviewComments`)
 - `helper/atlassian/bitbucket_impl/`: Bitbucket API client with comprehensive error handling
 - `helper/promt_help.go`: AI prompt engineering and response parsing
 - `model/`: Data structures for PRs, comments, and AI responses
@@ -383,7 +384,7 @@ INFO: Skipping review execution - another review process is already running for 
 - **Avoid peak hours**: Schedule during low-activity periods for better performance
 
 ### **Author Management**
-- **Ignore senior developers**: Add team leads to `ignorePullRequestOf` to avoid reviewing their PRs
+- **Summary-only for senior developers**: Add team leads to `ignorePullRequestOf` to post only the summary (no inline review)
 - **Case sensitivity**: Use exact display names as they appear in Bitbucket
 - **Bot exclusion**: Ignore automated PRs from dependency update tools or CI/CD systems
 - **Dynamic lists**: Consider different ignore lists for different repositories
