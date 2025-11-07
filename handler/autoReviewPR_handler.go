@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-co-op/gocron"
+	"github.com/go-co-op/gocron/v2"
 )
 
 // Helper function for min operation
@@ -33,10 +33,11 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 	helper.LoadConfigFile(&cfg)
 	log.Info("Init Review PullRequest Handler")
 
-	s := gocron.NewScheduler(time.UTC)
-
-	// Enable singleton mode to prevent overlapping job executions at the gocron level
-	s.SingletonMode()
+	s, err := gocron.NewScheduler()
+	if err != nil {
+		log.Errorf("Failed to create scheduler: %v", err)
+		return
+	}
 
 	reviewTask := func(auto model.AutoReviewPR) error {
 		// Check if another review is already running (thread-safe check)
@@ -165,12 +166,15 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 	for i, review := range cfg.AutoReviewPRs {
 		review := review
 		log.Info("Setup Review ", i, " ==> ", review.Cron)
-		_, err := s.Cron(review.Cron).Do(reviewTask, review)
+		_, err := s.NewJob(
+			gocron.CronJob(review.Cron, true),
+			gocron.NewTask(func() { _ = reviewTask(review) }),
+		)
 		if err != nil {
 			log.Error(err)
 		}
 	}
-	s.StartAsync()
+	s.Start()
 }
 
 // looksLikeCommand checks if the comment body looks like a shell command or user command
