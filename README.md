@@ -282,14 +282,14 @@ autoReviewPR:
 
 ![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_01-14.png)
 
-**Phase 2: Inline Review Generation**
-6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers
-7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping
-8. **AI review generation**: Calls AI with structured prompts per file
-9. **Comment filtering**: Removes command-like responses and empty comments
-10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments
-11. **Inline posting**: Posts formatted comments to specific diff lines
-12. **Error recovery**: Gracefully handles failures and continues processing
+**Phase 2: Inline Review Generation**  
+6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers  
+7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping  
+8. **AI review generation**: Calls AI with structured prompts per file  
+9. **Comment filtering**: Removes command-like responses and empty comments  
+10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments  
+11. **Inline posting**: Posts formatted comments to specific diff lines  
+12. **Error recovery**: Gracefully handles failures and continues processing  
 
 ![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_00-38.png)
 
