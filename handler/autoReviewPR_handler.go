@@ -22,6 +22,18 @@ func min(a, b int) int {
 	return b
 }
 
+// normalizeUsername lowers case and removes common separators to handle minor differences
+// such as "thang-tran" vs "thang.tran" vs "Thang_Tran".
+func isConfiguredDisplayName(name string, list []string) bool {
+	n := strings.TrimSpace(name)
+	for _, dn := range list {
+		if strings.TrimSpace(dn) == n {
+			return true
+		}
+	}
+	return false
+}
+
 type AutoReviewPRHandler struct {
 	Bitbucket atlassian.Bitbucket
 	mutex     sync.Mutex // Prevents concurrent review executions
@@ -107,15 +119,6 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			for i2, comment := range comments {
 				log.Debugf("Check Comment of %s - %s in PR : %d - %d", comment.User.Username, comment.User.DisplayName, pullRequest.ID, i2)
 
-				// If a reviewer in configured displayNames commented anywhere, we skip inline review later
-				for _, dn := range auto.DisplayNames {
-					if comment.User.DisplayName == dn {
-						skipInlineByDisplayName = true
-						log.Debugf("Reviewer displayName matched (%s); will skip inline review", dn)
-						break
-					}
-				}
-
 				// Detect an already-posted summary in general comments (not inline)
 				if comment.Content.Raw != "" && comment.Inline == nil {
 					lc := strings.ToLower(strings.TrimSpace(comment.Content.Raw))
@@ -132,14 +135,27 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					}
 				}
 
-				// Detect existing inline review comments from the bot/displayNames
-				// Combine: if it's an inline comment authored by the bot (by username or any displayNames),
-				// we consider it an existing inline review regardless of body markers.
-				if comment.Inline != nil {
+				// If a commenter with a configured displayName says 'LGTM', skip inline review.
+				if isConfiguredDisplayName(comment.User.DisplayName, auto.DisplayNames) {
+					lcBody := strings.ToLower(strings.TrimSpace(comment.Content.Raw))
+					if strings.Contains(lcBody, "lgtm") ||
+						strings.Contains(lcBody, "why:") ||
+						strings.Contains(lcBody, "how (step-by-step):") ||
+						strings.Contains(lcBody, "suggested change (before/after):") ||
+						strings.Contains(lcBody, "suggested change") || // fallback
+						strings.Contains(lcBody, "notes:") {
+						skipInlineByDisplayName = true
+						log.Debugf("Reviewer %s signaled LGTM; will skip inline review", comment.User.DisplayName)
+					}
+				}
+
+				// Detect existing inline review comments posted by the bot (to avoid duplicates).
+				// Only count comments authored by the bot account (username match).
+				if comment.Inline != nil && comment.User.Username == auto.Username {
 					hasInlineReview = true
 					key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
 					existingInlineComments[key] = true
-					log.Debugf("Found existing inline review (by bot/displayName) at %s:%d", comment.Inline.Path, comment.Inline.To)
+					log.Debugf("Found existing inline review (by bot) at %s:%d", comment.Inline.Path, comment.Inline.To)
 				}
 			}
 
@@ -151,8 +167,12 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				return err
 			}
 
-			// STEP 1: Check and post summary comment if it doesn't exist
-			_, _ = ar.ensureSummaryComment(&auto, &pullRequest, diff, hasSummary)
+			if !hasSummary {
+				// STEP 1: Check and post summary comment if it doesn't exist
+				_, _ = ar.PostSummaryComment(&auto, &pullRequest, diff)
+			} else {
+				log.Infof("Summary already exists for PR #%d, skipping", pullRequest.ID)
+			}
 
 			// STEP 2: Check and post inline review comments if they don't exist (delegated)
 			_, _ = ar.ensureInlineReviewComments(&auto, &pullRequest, diff, existingInlineComments, skipInlineByDisplayName, hasInlineReview)

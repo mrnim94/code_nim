@@ -11,11 +11,7 @@ import (
 
 // ensureSummaryComment generates and posts a summary comment if one doesn't already exist.
 // Returns (posted, error). If hasSummaryAlready is true, it only logs and returns (false, nil).
-func (ar *AutoReviewPRHandler) ensureSummaryComment(auto *model.AutoReviewPR, pr *model.PullRequest, diff string, hasSummaryAlready bool) (bool, error) {
-	if hasSummaryAlready {
-		log.Infof("Summary already exists for PR #%d, skipping", pr.ID)
-		return false, nil
-	}
+func (ar *AutoReviewPRHandler) PostSummaryComment(auto *model.AutoReviewPR, pr *model.PullRequest, diff string) (bool, error) {
 
 	log.Infof("No summary found for PR #%d, generating one...", pr.ID)
 	summaryPrompt := helper.CreateSummaryPrompt(pr, diff)
