@@ -103,6 +103,28 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
     - <edge cases, tests, follow-ups>
 
 - Focus your comments on code quality, bugs, logic errors, security, performance, and best practices.
+- SECURITY: Strongly prioritize detection of secrets or easy-to-reverse encodings (e.g., base64) committed to the repo.
+  - Treat as [major] or [critical] [security] depending on leak severity.
+  - GLOBAL heuristics (apply to ALL languages and file types, not only Kubernetes):
+    - Suspicious key names (case-insensitive): password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|access[_-]?key|accessKeyId|secretAccessKey|ssh[_-]?key|jwt|bearer|webhook|credential|METRICS_AUTH_.*.
+    - PEM/SSH material: lines containing "-----BEGIN (RSA|EC|OPENSSH|PRIVATE|CERTIFICATE) KEY-----".
+    - Provider patterns (examples): AWS AKIA/ASIA keys, GitHub tokens (ghp_|gho_|github_pat_), Stripe (sk_live_/pk_live_), GCP API keys (AIza...), Slack (xox[baprs]-...), and similar well-known formats.
+    - JWTs: three base64url segments separated by '.' with plausible length.
+    - Base64-like strings: ^[A-Za-z0-9_\\-+/]{14,}={0,2}$ that decode to mostly printable ASCII (usernames, hostnames, JSON, URLs).
+    - Long hex secrets: 32/40/64 hex chars that look like keys or HMACs.
+    - Connection strings/DSNs embedding credentials: scheme://user:pass@host:port/..., database URLs, SMTP creds.
+    - .env or pipeline/config YAML/JSON with literal secrets or tokens.
+    - Filenames/paths indicating credentials: secret(s), credential(s), token, key, .env, config/secrets, etc.
+    - Avoid false positives: allow clear placeholders like <PASSWORD>, example, dummy, test-only, or obviously encrypted blobs (age, PGP, SOPS content).
+  - Kubernetes-specific (when applicable):
+    - Manifests with kind: Secret under "data:" or "stringData:"; caution that base64 is not encryption.
+  - What to recommend (language-agnostic):
+    - Never commit real secrets to VCS; rotate any leaked credential immediately.
+    - Move secrets to a secret manager (Vault, AWS/GCP/Azure secrets, Doppler, 1Password) or use sealed/encrypted-at-rest mechanisms (SOPS/SealedSecrets).
+    - Inject secrets at runtime (env vars, mounted files) via CI/CD or platform-level secret injection; keep placeholders in code/config.
+    - Replace hard-coded credentials with references to secret variables; add pre-commit/CI scanners and update .gitignore to avoid committing generated secret files.
+    - Where relevant (Kubernetes), prefer External Secrets or Secrets Store CSI; if storing manifests, store only encrypted material.
+  - Your review comment should include concrete Before/After examples in the file’s native format (code, YAML, JSON, .env) illustrating a safe pattern.
 - Maybe Refactor the following code to improve readability, maintainability, and efficiency. Please ensure the logic remains unchanged.
 - Use clear, concise GitHub Markdown in your comments.
 - ONLY provide feedback if improvements are necessary; if the code is optimal, return an empty "reviews" array.
@@ -113,6 +135,7 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
 
 Examples of review comments:
 - {"lineNumber": 61, "lineText": "+ func matchesEngineID(deploymentName string, engineID string) bool {", "reviewComment": "[minor] [readability] Boundary-safe engine ID matching\nWhy:\n  - strings.Contains(name, suffix- may match unintended names (e.g., dlp vs adlp).\nHow (step-by-step):\n  - Ensure an ID matches only at word/hyphen boundary or end-of-name.\nSuggested change (Before/After):\n~~~go\n// Before\nreturn strings.Contains(deploymentName, engineID+\"-\") || strings.HasSuffix(deploymentName, engineID)\n~~~\n~~~go\n// After\nre := regexp.MustCompile((^|-)" + "" + "" + " + regexp.QuoteMeta(engineID) + "$")\nreturn re.MatchString(deploymentName)\n~~~\nNotes:\n  - Precompile the regex outside loops for performance; or implement non-regex boundary checks."}
+- {"lineNumber": 7, "lineText": "+   METRICS_AUTH_PASSWORD: MTIzNDU2", "reviewComment": "[critical] [security] Base64-encoded credential committed to repo\n+Why:\n+  - Base64 is reversible and provides no secrecy; anyone can decode the value.\n+  - Committing real secrets risks unauthorized access if reused elsewhere.\n+How (step-by-step):\n+  - Rotate this credential immediately.\n+  - Replace the literal value with a reference to a secret manager variable injected at runtime.\n+  - Add CI scanning to block future secret commits.\n+Suggested change (Before/After):\n+~~~yaml\n+# Before\ndata:\n  METRICS_AUTH_PASSWORD: MTIzNDU2\n+~~~\n+~~~yaml\n+# After (generic example)\n# Use runtime-injected env or a reference to your secret manager\nenv:\n  - name: METRICS_AUTH_PASSWORD\n    valueFrom:\n      secretKeyRef:\n        name: metrics-auth\n        key: password\n+~~~\n+Notes:\n+  - If not on Kubernetes, use your platform's secret store and inject via env at deploy time."}
 
 Pull Request Title: %s
 
