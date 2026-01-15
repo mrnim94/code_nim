@@ -2,7 +2,7 @@ module code_nim
 
 go 1.24.0
 
-toolchain go1.24.10
+toolchain go1.25.6
 
 require (
 	github.com/go-co-op/gocron/v2 v2.18.0
