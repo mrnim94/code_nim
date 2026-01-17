@@ -208,7 +208,8 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			}
 			latestCommitHash := ""
 			if len(commits) > 0 {
-				latestCommitHash = commits[0].Hash
+				// Bitbucket returns PR commits oldest-first; latest is the last element.
+				latestCommitHash = commits[len(commits)-1].Hash
 			}
 			hasNewCommits := false
 			useDeltaDiff := false

@@ -122,7 +122,7 @@ func FormatReviewBody(body string) string {
 		"Why:",
 		"How (step-by-step):",
 		"Suggested change (Before/After):",
-		"Notes:",
+		"Prompt for AI Agents (optional):",
 	}
 
 	formatted := body
@@ -135,10 +135,7 @@ func FormatReviewBody(body string) string {
 		formatted = strings.ReplaceAll(formatted, spacedHeading, properHeading)
 
 		// Handle cases where heading appears without preceding space
-		// but avoid double-replacing already formatted headings
-		if !strings.Contains(formatted, properHeading) {
-			formatted = strings.ReplaceAll(formatted, heading, properHeading)
-		}
+		formatted = strings.ReplaceAll(formatted, heading, properHeading)
 	}
 
 	// Clean up excessive newlines (more than 2 consecutive)

@@ -25,7 +25,7 @@ Detailed code-level feedback posted directly on specific lines:
 | 🔒 **Zero Duplicates** | Smart detection prevents duplicate summaries and inline comments |
 | ⚡ **Concurrency Safe** | Mutex + SingletonMode prevents race conditions |
 | 📊 **CodeRabbit Style** | Beautiful formatted summaries with sections and tables |
-| 🎨 **Rich Formatting** | Proper Markdown rendering with Why/How/Notes structure |
+| 🎨 **Rich Formatting** | Proper Markdown rendering with Why/How/Suggested change/Prompt for AI Agents |
 | 🚫 **Author Filtering** | Skip PRs from specific developers or bots |
 | 🆕 **New-Commit Only** | Reviews only new commits after the last bot review |
 | ✅ **LGTM Pause** | Comment "LGTM" to pause all bot reviews on a PR |
@@ -127,7 +127,7 @@ That’s it. The reviewer will periodically scan PRs, generate suggestions, and 
   - **Why**: Explanation of the issue or concern
   - **How (step-by-step)**: Actionable remediation steps
   - **Suggested change (Before/After)**: Code examples when applicable
-  - **Notes**: Additional context and best practices
+  - **Prompt for AI Agents (optional)**: Copy/paste prompt for external AI tools
 
 ### Core Functionality
 - **🔍 Bitbucket PR scanning**: Lists open PRs for configured repositories with pagination support
@@ -140,7 +140,7 @@ That’s it. The reviewer will periodically scan PRs, generate suggestions, and 
 ### Advanced Features
 - **⚡ Concurrency protection**: Mutex locking and gocron SingletonMode prevent race conditions and duplicate reviews
 - **🛡️ Rate limiting protection**: Built-in delays between API calls to prevent rate limit errors
-- **🎯 Smart comment formatting**: Automatic formatting of review sections (Why, How, Suggested changes, Notes)
+- **🎯 Smart comment formatting**: Automatic formatting of review sections (Why, How, Suggested changes, Prompt for AI Agents)
 - **🚫 Command filtering**: Automatically filters out AI responses that look like shell commands or code execution
 - **📊 Performance monitoring**: Execution time tracking and detailed performance logging
 - **🔧 Configurable AI models**: Support for different Gemini models per repository (gemini-1.5-flash, gemini-2.5-flash, etc.)
@@ -306,7 +306,7 @@ autoReviewPR:
 #### **AI Review Generation**
 - **Two prompt types**: Separate prompts for summary vs. inline reviews
 - **Summary prompt**: Focuses on high-level overview, categorization, and change impact
-- **Inline prompt**: Detailed code analysis with structured feedback (Why/How/Notes)
+- **Inline prompt**: Detailed code analysis with structured feedback (Why/How/Suggested change/Prompt for AI Agents)
 - **CodeRabbit-style formatting**: Beautiful Markdown with proper sections and bullets
 - **Multiple AI providers**: Works with Gemini or self-hosted APIs
 - **Context-aware**: Considers PR title, description, and overall change patterns
@@ -521,7 +521,7 @@ Both types are tracked independently, so you can have one without the other, and
 
 ### **Beautiful Formatting**
 - 📊 Summary comments with proper sections, bullets, and tables
-- 📝 Inline comments with structured Why/How/Notes format
+- 📝 Inline comments with structured Why/How/Suggested change/Prompt for AI Agents format
 - 🎨 Clean Markdown rendering in Bitbucket
 
 ## 📄 License

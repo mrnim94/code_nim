@@ -8,8 +8,10 @@
 - Delta-diff fallback: if commit-to-commit diff is empty, fall back to full PR diff.
 - Bot marker (`<!-- auto-review-bot -->`) to reliably detect bot comments when accounts are shared.
 - Detailed inline-review diagnostics to explain why zero inline comments were posted.
+- New inline section: "Prompt for AI Agents (optional)" for copy/paste into other AI tools.
 
 ### Changed
 - Inline review suppression now relies on explicit LGTM only, not reviewer content.
 - Summary comments include a hidden marker with the latest reviewed commit hash.
+- Inline formatting now targets "Prompt for AI Agents (optional)" instead of "Notes".
 
