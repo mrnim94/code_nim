@@ -149,6 +149,14 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				log.Errorf("Error Pull Comments: %v", err)
 				return err
 			}
+			maxTotal := auto.MaxTotalComments
+			if maxTotal <= 0 {
+				maxTotal = 200
+			}
+			if len(comments) >= maxTotal {
+				log.Infof("PR #%d reached total comment limit (max=%d, total=%d); skipping AI review", pullRequest.ID, maxTotal, len(comments))
+				continue
+			}
 
 			// Check for existing summary and inline review comments independently
 			hasSummary := false
@@ -274,7 +282,7 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 
 			// STEP 2: Check and post inline review comments if they don't exist (delegated)
 			skipInlineDueToExisting := hasInlineReview && !hasNewCommits
-			_, _ = ar.ensureInlineReviewComments(&auto, &pullRequest, diff, existingInlineComments, skipInlineByDisplayName, skipInlineDueToExisting)
+			_, _ = ar.ensureInlineReviewComments(&auto, &pullRequest, diff, existingInlineComments, skipInlineByDisplayName, skipInlineDueToExisting, len(comments))
 		}
 
 		duration := time.Since(startTime)

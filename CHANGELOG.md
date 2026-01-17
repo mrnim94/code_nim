@@ -9,6 +9,8 @@
 - Bot marker (`<!-- auto-review-bot -->`) to reliably detect bot comments when accounts are shared.
 - Detailed inline-review diagnostics to explain why zero inline comments were posted.
 - New inline section: "Prompt for AI Agents (optional)" for copy/paste into other AI tools.
+ - Configurable `maxInlineComments` to cap inline comments per PR (default: 100).
+- Configurable `maxTotalComments` to cap total PR comments (default: 200).
 
 ### Changed
 - Inline review suppression now relies on explicit LGTM only, not reviewer content.

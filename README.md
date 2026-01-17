@@ -239,6 +239,8 @@ autoReviewPR:
 | `aiModel` | Model name for your self-hosted API | ✅ (if using self-hosted) |
 | `selfApiBaseUrl` | Base URL of your AI API (e.g., `http://127.0.0.1:1994`) | ✅ (if using self-hosted) |
 | **Other** | | |
+| `maxInlineComments` | Max inline comments per PR (default: 100) | ❌ |
+| `maxTotalComments` | Max total comments per PR (default: 200) | ❌ |
 | `ignorePullRequestOf.displayNames` | Authors whose PRs should be summary-only (no inline review) | ❌ |
 
 ### Available AI Providers

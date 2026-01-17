@@ -20,6 +20,8 @@ type AutoReviewPR struct {
 	AIModel             string `yaml:"aiModel,omitempty"`        // Preferred model name; falls back to GeminiModel
 	AIKey               string `yaml:"aiKey,omitempty"`          // Generic API key; falls back to GeminiKey
 	SelfAPIBaseURL      string `yaml:"selfApiBaseUrl,omitempty"` // e.g., http://192.168.101.27:1994
+	MaxInlineComments   int    `yaml:"maxInlineComments,omitempty"`
+	MaxTotalComments    int    `yaml:"maxTotalComments,omitempty"`
 	IgnorePullRequestOf struct {
 		DisplayNames []string `yaml:"displayNames"`
 	} `yaml:"ignorePullRequestOf"`
