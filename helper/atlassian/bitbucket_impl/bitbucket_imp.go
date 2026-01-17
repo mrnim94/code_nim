@@ -102,6 +102,85 @@ func (hc *HttpClient) FetchPullRequestDiff(prID int, workspace, repoSlug, userna
 	return string(rawBody), nil
 }
 
+// FetchPullRequestCommits lists commits for a specific pull request.
+func (hc *HttpClient) FetchPullRequestCommits(prID int, workspace, repoSlug, username, appPassword string) ([]model.PullRequestCommit, error) {
+	commitsAPIURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/commits", workspace, repoSlug, prID)
+	log.Debugf("Fetching PR commits from URL: %s", commitsAPIURL)
+
+	allCommits := []model.PullRequestCommit{}
+	nextURL := commitsAPIURL
+	for nextURL != "" {
+		req, err := http.NewRequest("GET", nextURL, nil)
+		if err != nil {
+			log.Fatal(err)
+			return nil, err
+		}
+		req.SetBasicAuth(username, appPassword)
+
+		resp, err := hc.http.Do(req)
+		if err != nil {
+			log.Error(err)
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			log.Errorf("Error: Expected status 200 but got %d", resp.StatusCode)
+			return nil, fmt.Errorf("error: expected status 200 but got %d", resp.StatusCode)
+		}
+		rawBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Error(err)
+			return nil, err
+		}
+
+		var result struct {
+			Values  []model.PullRequestCommit `json:"values"`
+			Pagelen int                       `json:"pagelen"`
+			Size    int                       `json:"size"`
+			Page    int                       `json:"page"`
+			Next    string                    `json:"next"`
+		}
+		if err := json.Unmarshal(rawBody, &result); err != nil {
+			log.Error(err)
+			return nil, err
+		}
+		allCommits = append(allCommits, result.Values...)
+		nextURL = result.Next
+	}
+	return allCommits, nil
+}
+
+// FetchDiffBetweenCommits gets a diff between two commit hashes in a repo.
+func (hc *HttpClient) FetchDiffBetweenCommits(workspace, repoSlug, fromHash, toHash, username, appPassword string) (string, error) {
+	spec := fmt.Sprintf("%s..%s", fromHash, toHash)
+	diffAPIURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/diff/%s", workspace, repoSlug, spec)
+	log.Debugf("Fetching diff between commits from URL: %s", diffAPIURL)
+
+	req, err := http.NewRequest("GET", diffAPIURL, nil)
+	if err != nil {
+		log.Fatal(err)
+		return "", err
+	}
+	req.SetBasicAuth(username, appPassword)
+
+	resp, err := hc.http.Do(req)
+	if err != nil {
+		log.Error(err)
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		log.Errorf("Error: Expected status 200 but got %d", resp.StatusCode)
+		return "", fmt.Errorf("Error: Expected status 200 but got %d", resp.StatusCode)
+	}
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Error(err)
+		return "", err
+	}
+	return string(rawBody), nil
+}
+
 // Minimal diff parser for demonstration
 func (hc *HttpClient) ParseDiff(diff string) []map[string]interface{} {
 	files := []map[string]interface{}{}

@@ -7,6 +7,8 @@ import "code_nim/model"
 type Bitbucket interface {
 	FetchAllPullRequests(username, appPassword, workspace, repoSlug string) ([]model.PullRequest, error)
 	FetchPullRequestDiff(prID int, workspace, repoSlug, username, appPassword string) (string, error)
+	FetchPullRequestCommits(prID int, workspace, repoSlug, username, appPassword string) ([]model.PullRequestCommit, error)
+	FetchDiffBetweenCommits(workspace, repoSlug, fromHash, toHash, username, appPassword string) (string, error)
 	ParseDiff(diff string) []map[string]interface{}
 	FetchPullRequestComments(prID int, workspace, repoSlug, username, appPassword string) ([]model.PullRequestComment, error)
 	PushPullRequestComment(prID int, workspace, repoSlug, username, appPassword, commentText string) error

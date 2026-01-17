@@ -27,6 +27,8 @@ Detailed code-level feedback posted directly on specific lines:
 | 📊 **CodeRabbit Style** | Beautiful formatted summaries with sections and tables |
 | 🎨 **Rich Formatting** | Proper Markdown rendering with Why/How/Notes structure |
 | 🚫 **Author Filtering** | Skip PRs from specific developers or bots |
+| 🆕 **New-Commit Only** | Reviews only new commits after the last bot review |
+| ✅ **LGTM Pause** | Comment "LGTM" to pause all bot reviews on a PR |
 | 📈 **Production Ready** | Comprehensive logging, error handling, and monitoring |
 
 ## 🧪 Quickstart (2 minutes)
@@ -277,14 +279,14 @@ autoReviewPR:
 1. **Fetch PRs**: Retrieves all open pull requests from configured repository
 2. **Author filtering**: If PR author is in ignore list, enters summary-only mode (skips inline review)
 3. **Check existing summary**: Scans for existing "Summary by Nim" comment
-4. **Generate summary** (if missing): Calls AI with full PR context to create CodeRabbit-style overview
+4. **Generate summary** (if missing or new commits): Calls AI with full PR context to create CodeRabbit-style overview
 5. **Post summary**: Formats and posts structured summary with sections (New Features, Walkthrough, Changes, etc.)
 
 ![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_01-14.png)
 
 **Phase 2: Inline Review Generation**
-6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers
-7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping
+6. **Check existing inline reviews**: Scans for existing inline comments to avoid duplicates
+7. **Diff analysis** (delta-first): Uses commit-to-commit diff for new commits; falls back to full PR diff if empty
 8. **AI review generation**: Calls AI with structured prompts per file
 9. **Comment filtering**: Removes command-like responses and empty comments
 10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments
@@ -298,6 +300,8 @@ autoReviewPR:
 - ✅ **Inline review comments** are checked and posted independently
 - ✅ Each type can exist without the other
 - ✅ Prevents duplicate posting of either type
+- ✅ Reviews only **new commits** since the last bot review
+- ✅ LGTM comment pauses all bot reviews for that PR
 
 #### **AI Review Generation**
 - **Two prompt types**: Separate prompts for summary vs. inline reviews
@@ -409,7 +413,9 @@ INFO: Skipping review execution - another review process is already running for 
 |-------|----------|----------|
 | **No comments posted** | Reviews run but no Bitbucket comments appear | Check App Password has comment permissions |
 | **Summary not posted** | Inline comments work but no summary | Check logs for "AI summary error" or "empty summary text" |
-| **Inline comments missing** | Summary posted but no inline reviews | Check logs for "hasInlineReview" detection or AI errors |
+| **Inline comments missing** | Summary posted but no inline reviews | Check logs for "No inline comments posted" breakdown and AI response errors |
+| **New commits not reviewed** | Bot posts summary but no new inline comments | Ensure no human "LGTM" comment exists; check delta diff fallback logs |
+| **Diff appears empty** | Summary says diff is empty | Delta diff can be empty; bot falls back to full PR diff automatically |
 | **Rate limiting** | `429` errors in logs | Increase cron intervals, check AI provider quotas |
 | **Authentication failures** | `401/403` errors | Verify Bitbucket credentials and AI API key/endpoint |
 | **PRs not ignored** | Reviews posted on ignored authors | Ensure display names match exactly (case-sensitive) |

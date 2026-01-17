@@ -11,7 +11,7 @@ import (
 
 // ensureSummaryComment generates and posts a summary comment if one doesn't already exist.
 // Returns (posted, error). If hasSummaryAlready is true, it only logs and returns (false, nil).
-func (ar *AutoReviewPRHandler) PostSummaryComment(auto *model.AutoReviewPR, pr *model.PullRequest, diff string) (bool, error) {
+func (ar *AutoReviewPRHandler) PostSummaryComment(auto *model.AutoReviewPR, pr *model.PullRequest, diff string, lastReviewedHash, latestCommitHash string) (bool, error) {
 
 	log.Infof("No summary found for PR #%d, generating one...", pr.ID)
 	summaryPrompt := helper.CreateSummaryPrompt(pr, diff)
@@ -29,7 +29,14 @@ func (ar *AutoReviewPRHandler) PostSummaryComment(auto *model.AutoReviewPR, pr *
 	log.Debugf("AI summary response length: %d chars (first 100): %s", len(trimmed), trimmed[:min(100, len(trimmed))])
 
 	head := "Summary by Nim\n\n"
-	body := head + formatSummaryBody(summaryText)
+	if lastReviewedHash != "" && latestCommitHash != "" && lastReviewedHash != latestCommitHash {
+		head = fmt.Sprintf("Summary by Nim (new commits since %s)\n\n", shortHash(lastReviewedHash))
+	}
+	marker := reviewBotMarker
+	if latestCommitHash != "" {
+		marker = fmt.Sprintf("%s\n\n<!-- auto-review-base:%s -->", reviewBotMarker, latestCommitHash)
+	}
+	body := head + helper.FormatSummaryBody(summaryText) + "\n\n" + marker
 	log.Debugf("Posting summary comment with body length: %d", len(body))
 	if err := ar.Bitbucket.PushPullRequestComment(pr.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword, body); err != nil {
 		log.Errorf("Failed to post summary comment: %v", err)
@@ -62,12 +69,16 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 	parsed := ar.Bitbucket.ParseDiff(diff)
 
 	var allComments []model.ReviewComment
+	outOfRange := 0
+	deletedLine := 0
+	emptySnippet := 0
 	for _, file := range parsed {
 		filePath := file["path"].(string)
 		log.Debugf("Check File path %s", filePath)
 		hunks := file["hunks"].([]map[string]interface{})
-		allLines, toLineMap := buildDiffSnippetAndLineMap(hunks)
+		allLines, toLineMap := helper.BuildDiffSnippetAndLineMap(hunks)
 		if len(allLines) == 0 {
+			emptySnippet++
 			continue
 		}
 		prompt := helper.CreatePrompt(filePath, allLines, pr)
@@ -86,7 +97,7 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 		for i := range comments {
 			// Use anchor text to correct the index if present
 			if comments[i].Anchor != "" {
-				idx := nearestMatchingLineIndex(allLines, comments[i].Anchor, comments[i].Position-1)
+				idx := helper.NearestMatchingLineIndex(allLines, comments[i].Anchor, comments[i].Position-1)
 				if idx >= 0 && idx < len(toLineMap) {
 					comments[i].Position = idx + 1
 				}
@@ -95,6 +106,7 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 			if comments[i].Position <= 0 || comments[i].Position > len(toLineMap) {
 				log.Debugf("Skip comment with out-of-range position %d for file %s", comments[i].Position, filePath)
 				comments[i].Position = 0
+				outOfRange++
 				continue
 			}
 			mapped := toLineMap[comments[i].Position-1]
@@ -102,6 +114,7 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 				// Deleted lines have no destination; skip
 				log.Debugf("Skip comment on deleted line (no destination) at diff idx %d for file %s", comments[i].Position, filePath)
 				comments[i].Position = 0
+				deletedLine++
 				continue
 			}
 			comments[i].Path = filePath
@@ -112,28 +125,39 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 
 	// Filter comments: no empty body and no command-like content
 	filteredComments := make([]model.ReviewComment, 0, len(allComments))
+	emptyBody := 0
+	commandBody := 0
 	for _, c := range allComments {
 		if c.Body == "" {
+			emptyBody++
 			continue
 		}
-		if looksLikeCommand(c.Body) {
+		if helper.LooksLikeCommand(c.Body) {
+			commandBody++
 			continue
 		}
 		filteredComments = append(filteredComments, c)
 	}
 
 	postedCount := 0
+	duplicateCount := 0
+	missingLocation := 0
 	for _, c := range filteredComments {
 		if c.Path == "" || c.Position <= 0 {
+			missingLocation++
 			continue
 		}
 		key := fmt.Sprintf("%s:%d", c.Path, c.Position)
 		if existingInlineComments[key] {
 			log.Debugf("Skipping duplicate inline comment at %s", key)
+			duplicateCount++
 			continue
 		}
 
-		formattedBody := formatReviewBody(c.Body)
+		formattedBody := helper.FormatReviewBody(c.Body)
+		if !strings.Contains(formattedBody, reviewBotMarker) {
+			formattedBody = formattedBody + "\n\n" + reviewBotMarker
+		}
 		err := ar.Bitbucket.PushPullRequestInlineComment(
 			pr.ID,
 			auto.Workspace,
@@ -153,6 +177,19 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 	}
 	if postedCount > 0 {
 		log.Infof("✓ Posted %d inline review comments for PR #%d", postedCount, pr.ID)
+	} else {
+		log.Infof("No inline comments posted for PR #%d (ai=%d, filtered=%d, empty=%d, command=%d, outOfRange=%d, deleted=%d, missingLocation=%d, dup=%d, emptySnippet=%d)",
+			pr.ID,
+			len(allComments),
+			len(filteredComments),
+			emptyBody,
+			commandBody,
+			outOfRange,
+			deletedLine,
+			missingLocation,
+			duplicateCount,
+			emptySnippet,
+		)
 	}
 	return postedCount, nil
 }
