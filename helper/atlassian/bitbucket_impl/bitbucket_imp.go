@@ -122,13 +122,14 @@ func (hc *HttpClient) FetchPullRequestCommits(prID int, workspace, repoSlug, use
 			log.Error(err)
 			return nil, err
 		}
-		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
+			resp.Body.Close()
 			log.Errorf("Error: Expected status 200 but got %d", resp.StatusCode)
 			return nil, fmt.Errorf("error: expected status 200 but got %d", resp.StatusCode)
 		}
 		rawBody, err := io.ReadAll(resp.Body)
 		if err != nil {
+			resp.Body.Close()
 			log.Error(err)
 			return nil, err
 		}
@@ -141,9 +142,11 @@ func (hc *HttpClient) FetchPullRequestCommits(prID int, workspace, repoSlug, use
 			Next    string                    `json:"next"`
 		}
 		if err := json.Unmarshal(rawBody, &result); err != nil {
+			resp.Body.Close()
 			log.Error(err)
 			return nil, err
 		}
+		resp.Body.Close()
 		allCommits = append(allCommits, result.Values...)
 		nextURL = result.Next
 	}
