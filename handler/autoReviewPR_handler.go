@@ -43,6 +43,7 @@ func hasBotMarker(raw string) bool {
 
 func extractLastReviewedHash(comments []model.PullRequestComment) string {
 	var lastFound string
+	foundCount := 0
 	for _, comment := range comments {
 		if comment.Inline != nil {
 			continue
@@ -60,7 +61,14 @@ func extractLastReviewedHash(comments []model.PullRequestComment) string {
 		hash := strings.TrimSpace(raw[start : start+end])
 		if hash != "" {
 			lastFound = hash
+			foundCount++
+			log.Debugf("Found review marker with hash: %s (marker #%d)", shortHash(hash), foundCount)
 		}
+	}
+	if lastFound != "" {
+		log.Debugf("Extracted lastReviewedHash: %s (from %d markers total)", shortHash(lastFound), foundCount)
+	} else {
+		log.Debugf("No review marker found in %d comments", len(comments))
 	}
 	return lastFound
 }
@@ -216,9 +224,17 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 			}
 			latestCommitHash := ""
 			if len(commits) > 0 {
-				// Bitbucket returns PR commits oldest-first; latest is the last element.
-				latestCommitHash = commits[len(commits)-1].Hash
+				// Bitbucket returns PR commits newest-first; latest is the first element.
+				latestCommitHash = commits[0].Hash
+				log.Debugf("PR #%d: Found %d commits, latest=%s", pullRequest.ID, len(commits), shortHash(latestCommitHash))
+				// Log all commit hashes for debugging
+				for i, c := range commits {
+					log.Debugf("PR #%d: commit[%d]=%s", pullRequest.ID, i, shortHash(c.Hash))
+				}
+			} else {
+				log.Debugf("PR #%d: No commits found", pullRequest.ID)
 			}
+			log.Debugf("PR #%d: lastReviewedHash=%s, latestCommitHash=%s", pullRequest.ID, shortHash(lastReviewedHash), shortHash(latestCommitHash))
 			hasNewCommits := false
 			useDeltaDiff := false
 			if latestCommitHash != "" {
@@ -243,7 +259,7 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					log.Infof("PR #%d has new commits since %s (latest %s)", pullRequest.ID, shortHash(lastReviewedHash), shortHash(latestCommitHash))
 				}
 			} else {
-				log.Infof("PR #%d has no new commits since last review", pullRequest.ID)
+				log.Infof("PR #%d has no new commits since last review (latest commit %s already reviewed)", pullRequest.ID, shortHash(latestCommitHash))
 			}
 
 			// Fetch diff for both summary and inline review
