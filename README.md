@@ -25,8 +25,10 @@ Detailed code-level feedback posted directly on specific lines:
 | 🔒 **Zero Duplicates** | Smart detection prevents duplicate summaries and inline comments |
 | ⚡ **Concurrency Safe** | Mutex + SingletonMode prevents race conditions |
 | 📊 **CodeRabbit Style** | Beautiful formatted summaries with sections and tables |
-| 🎨 **Rich Formatting** | Proper Markdown rendering with Why/How/Notes structure |
+| 🎨 **Rich Formatting** | Proper Markdown rendering with Why/How/Suggested change/Prompt for AI Agents |
 | 🚫 **Author Filtering** | Skip PRs from specific developers or bots |
+| 🆕 **New-Commit Only** | Reviews only new commits after the last bot review |
+| ✅ **LGTM Pause** | Comment "LGTM" to pause all bot reviews on a PR |
 | 📈 **Production Ready** | Comprehensive logging, error handling, and monitoring |
 
 ## 🧪 Quickstart (2 minutes)
@@ -125,7 +127,7 @@ That’s it. The reviewer will periodically scan PRs, generate suggestions, and 
   - **Why**: Explanation of the issue or concern
   - **How (step-by-step)**: Actionable remediation steps
   - **Suggested change (Before/After)**: Code examples when applicable
-  - **Notes**: Additional context and best practices
+  - **Prompt for AI Agents (optional)**: Copy/paste prompt for external AI tools
 
 ### Core Functionality
 - **🔍 Bitbucket PR scanning**: Lists open PRs for configured repositories with pagination support
@@ -138,7 +140,7 @@ That’s it. The reviewer will periodically scan PRs, generate suggestions, and 
 ### Advanced Features
 - **⚡ Concurrency protection**: Mutex locking and gocron SingletonMode prevent race conditions and duplicate reviews
 - **🛡️ Rate limiting protection**: Built-in delays between API calls to prevent rate limit errors
-- **🎯 Smart comment formatting**: Automatic formatting of review sections (Why, How, Suggested changes, Notes)
+- **🎯 Smart comment formatting**: Automatic formatting of review sections (Why, How, Suggested changes, Prompt for AI Agents)
 - **🚫 Command filtering**: Automatically filters out AI responses that look like shell commands or code execution
 - **📊 Performance monitoring**: Execution time tracking and detailed performance logging
 - **🔧 Configurable AI models**: Support for different Gemini models per repository (gemini-1.5-flash, gemini-2.5-flash, etc.)
@@ -237,6 +239,8 @@ autoReviewPR:
 | `aiModel` | Model name for your self-hosted API | ✅ (if using self-hosted) |
 | `selfApiBaseUrl` | Base URL of your AI API (e.g., `http://127.0.0.1:1994`) | ✅ (if using self-hosted) |
 | **Other** | | |
+| `maxInlineComments` | Max inline comments per PR (default: 100) | ❌ |
+| `maxTotalComments` | Max total comments per PR (default: 200) | ❌ |
 | `ignorePullRequestOf.displayNames` | Authors whose PRs should be summary-only (no inline review) | ❌ |
 
 ### Available AI Providers
@@ -277,14 +281,14 @@ autoReviewPR:
 1. **Fetch PRs**: Retrieves all open pull requests from configured repository
 2. **Author filtering**: If PR author is in ignore list, enters summary-only mode (skips inline review)
 3. **Check existing summary**: Scans for existing "Summary by Nim" comment
-4. **Generate summary** (if missing): Calls AI with full PR context to create CodeRabbit-style overview
+4. **Generate summary** (if missing or new commits): Calls AI with full PR context to create CodeRabbit-style overview
 5. **Post summary**: Formats and posts structured summary with sections (New Features, Walkthrough, Changes, etc.)
 
 ![](https://raw.githubusercontent.com/mrnim94/code_nim/refs/heads/master/docs/img/2025-11-07_01-14.png)
 
 **Phase 2: Inline Review Generation**
-6. **Check existing inline reviews**: Scans for existing inline comments with "Why:", "How:", "Notes:" markers
-7. **Diff analysis** (if needed): Fetches and parses PR diffs with accurate line mapping
+6. **Check existing inline reviews**: Scans for existing inline comments to avoid duplicates
+7. **Diff analysis** (delta-first): Uses commit-to-commit diff for new commits; falls back to full PR diff if empty
 8. **AI review generation**: Calls AI with structured prompts per file
 9. **Comment filtering**: Removes command-like responses and empty comments
 10. **Duplicate prevention**: Checks file:line map to avoid posting duplicate inline comments
@@ -298,11 +302,13 @@ autoReviewPR:
 - ✅ **Inline review comments** are checked and posted independently
 - ✅ Each type can exist without the other
 - ✅ Prevents duplicate posting of either type
+- ✅ Reviews only **new commits** since the last bot review
+- ✅ LGTM comment pauses all bot reviews for that PR
 
 #### **AI Review Generation**
 - **Two prompt types**: Separate prompts for summary vs. inline reviews
 - **Summary prompt**: Focuses on high-level overview, categorization, and change impact
-- **Inline prompt**: Detailed code analysis with structured feedback (Why/How/Notes)
+- **Inline prompt**: Detailed code analysis with structured feedback (Why/How/Suggested change/Prompt for AI Agents)
 - **CodeRabbit-style formatting**: Beautiful Markdown with proper sections and bullets
 - **Multiple AI providers**: Works with Gemini or self-hosted APIs
 - **Context-aware**: Considers PR title, description, and overall change patterns
@@ -409,7 +415,9 @@ INFO: Skipping review execution - another review process is already running for 
 |-------|----------|----------|
 | **No comments posted** | Reviews run but no Bitbucket comments appear | Check App Password has comment permissions |
 | **Summary not posted** | Inline comments work but no summary | Check logs for "AI summary error" or "empty summary text" |
-| **Inline comments missing** | Summary posted but no inline reviews | Check logs for "hasInlineReview" detection or AI errors |
+| **Inline comments missing** | Summary posted but no inline reviews | Check logs for "No inline comments posted" breakdown and AI response errors |
+| **New commits not reviewed** | Bot posts summary but no new inline comments | Ensure no human "LGTM" comment exists; check delta diff fallback logs |
+| **Diff appears empty** | Summary says diff is empty | Delta diff can be empty; bot falls back to full PR diff automatically |
 | **Rate limiting** | `429` errors in logs | Increase cron intervals, check AI provider quotas |
 | **Authentication failures** | `401/403` errors | Verify Bitbucket credentials and AI API key/endpoint |
 | **PRs not ignored** | Reviews posted on ignored authors | Ensure display names match exactly (case-sensitive) |
@@ -515,7 +523,7 @@ Both types are tracked independently, so you can have one without the other, and
 
 ### **Beautiful Formatting**
 - 📊 Summary comments with proper sections, bullets, and tables
-- 📝 Inline comments with structured Why/How/Notes format
+- 📝 Inline comments with structured Why/How/Suggested change/Prompt for AI Agents format
 - 🎨 Clean Markdown rendering in Bitbucket
 
 ## 📄 License

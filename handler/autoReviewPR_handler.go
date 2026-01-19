@@ -6,7 +6,6 @@ import (
 	"code_nim/log"
 	"code_nim/model"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +31,45 @@ func isConfiguredDisplayName(name string, list []string) bool {
 		}
 	}
 	return false
+}
+
+const reviewMarkerPrefix = "<!-- auto-review-base:"
+const reviewMarkerSuffix = "-->"
+const reviewBotMarker = "<!-- auto-review-bot -->"
+
+func hasBotMarker(raw string) bool {
+	return strings.Contains(raw, reviewMarkerPrefix) || strings.Contains(raw, reviewBotMarker)
+}
+
+func extractLastReviewedHash(comments []model.PullRequestComment) string {
+	var lastFound string
+	for _, comment := range comments {
+		if comment.Inline != nil {
+			continue
+		}
+		raw := comment.Content.Raw
+		start := strings.Index(raw, reviewMarkerPrefix)
+		if start == -1 {
+			continue
+		}
+		start += len(reviewMarkerPrefix)
+		end := strings.Index(raw[start:], reviewMarkerSuffix)
+		if end == -1 {
+			continue
+		}
+		hash := strings.TrimSpace(raw[start : start+end])
+		if hash != "" {
+			lastFound = hash
+		}
+	}
+	return lastFound
+}
+
+func shortHash(hash string) string {
+	if len(hash) <= 7 {
+		return hash
+	}
+	return hash[:7]
 }
 
 type AutoReviewPRHandler struct {
@@ -89,6 +127,7 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 
 			// Summary-only mode flag: when true, we will generate summary but skip inline review
 			skipInlineByDisplayName := false
+			skipAllByLGTM := false
 
 			ignorePROfName := false
 			for _, displayNameConfig := range auto.IgnorePullRequestOf.DisplayNames {
@@ -110,11 +149,20 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 				log.Errorf("Error Pull Comments: %v", err)
 				return err
 			}
+			maxTotal := auto.MaxTotalComments
+			if maxTotal <= 0 {
+				maxTotal = 200
+			}
+			if len(comments) >= maxTotal {
+				log.Infof("PR #%d reached total comment limit (max=%d, total=%d); skipping AI review", pullRequest.ID, maxTotal, len(comments))
+				continue
+			}
 
 			// Check for existing summary and inline review comments independently
 			hasSummary := false
 			hasInlineReview := false
 			existingInlineComments := make(map[string]bool)
+			lastReviewedHash := ""
 
 			for i2, comment := range comments {
 				log.Debugf("Check Comment of %s - %s in PR : %d - %d", comment.User.Username, comment.User.DisplayName, pullRequest.ID, i2)
@@ -135,47 +183,106 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 					}
 				}
 
-				// If a commenter with a configured displayName says 'LGTM', skip inline review.
-				if isConfiguredDisplayName(comment.User.DisplayName, auto.DisplayNames) {
+				// If a commenter says 'LGTM', pause all bot reviews for this PR.
+				if comment.Inline == nil && !hasBotMarker(comment.Content.Raw) {
 					lcBody := strings.ToLower(strings.TrimSpace(comment.Content.Raw))
-					if strings.Contains(lcBody, "lgtm") ||
-						strings.Contains(lcBody, "why:") ||
-						strings.Contains(lcBody, "how (step-by-step):") ||
-						strings.Contains(lcBody, "suggested change (before/after):") ||
-						strings.Contains(lcBody, "suggested change") || // fallback
-						strings.Contains(lcBody, "notes:") {
-						skipInlineByDisplayName = true
-						log.Debugf("Reviewer %s signaled LGTM; will skip inline review", comment.User.DisplayName)
+					if strings.Contains(lcBody, "lgtm") {
+						skipAllByLGTM = true
+						log.Infof("LGTM detected by %s; will skip all reviews for PR #%d", comment.User.DisplayName, pullRequest.ID)
 					}
 				}
 
+				// NOTE: Do not skip inline reviews just because a human reviewer left comments.
+				// Inline review is only paused by explicit LGTM (see skipAllByLGTM).
+
 				// Detect existing inline review comments posted by the bot (to avoid duplicates).
-				// Only count comments authored by the bot account (username match).
-				if comment.Inline != nil && comment.User.Username == auto.Username {
+				// Use hidden marker to distinguish bot comments when accounts are shared.
+				if comment.Inline != nil && hasBotMarker(comment.Content.Raw) {
 					hasInlineReview = true
 					key := fmt.Sprintf("%s:%d", comment.Inline.Path, comment.Inline.To)
 					existingInlineComments[key] = true
 					log.Debugf("Found existing inline review (by bot) at %s:%d", comment.Inline.Path, comment.Inline.To)
 				}
 			}
+			if skipAllByLGTM {
+				log.Infof("Skipping PR #%d because LGTM pause is active", pullRequest.ID)
+				continue
+			}
+			lastReviewedHash = extractLastReviewedHash(comments)
+
+			commits, err := ar.Bitbucket.FetchPullRequestCommits(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
+			if err != nil {
+				log.Errorf("Error fetching commits for PR #%d: %v", pullRequest.ID, err)
+			}
+			latestCommitHash := ""
+			if len(commits) > 0 {
+				// Bitbucket returns PR commits oldest-first; latest is the last element.
+				latestCommitHash = commits[len(commits)-1].Hash
+			}
+			hasNewCommits := false
+			useDeltaDiff := false
+			if latestCommitHash != "" {
+				if lastReviewedHash == "" {
+					hasNewCommits = true
+				} else if lastReviewedHash != latestCommitHash {
+					hasNewCommits = true
+					for _, c := range commits {
+						if c.Hash == lastReviewedHash {
+							useDeltaDiff = true
+							break
+						}
+					}
+				}
+			}
+			if latestCommitHash == "" {
+				log.Infof("PR #%d commit tracking unavailable; using full diff", pullRequest.ID)
+			} else if hasNewCommits {
+				if lastReviewedHash == "" {
+					log.Infof("PR #%d has new commits; first review detected (latest %s)", pullRequest.ID, shortHash(latestCommitHash))
+				} else {
+					log.Infof("PR #%d has new commits since %s (latest %s)", pullRequest.ID, shortHash(lastReviewedHash), shortHash(latestCommitHash))
+				}
+			} else {
+				log.Infof("PR #%d has no new commits since last review", pullRequest.ID)
+			}
 
 			// Fetch diff for both summary and inline review
 			log.Debugf("Check Diff PR: %d - %d", pullRequest.ID, i)
-			diff, err := ar.Bitbucket.FetchPullRequestDiff(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
+			var diff string
+			if useDeltaDiff {
+				diff, err = ar.Bitbucket.FetchDiffBetweenCommits(auto.Workspace, auto.RepoSlug, lastReviewedHash, latestCommitHash, auto.Username, auto.AppPassword)
+			} else {
+				diff, err = ar.Bitbucket.FetchPullRequestDiff(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
+			}
 			if err != nil {
 				log.Errorf("Error fetching diff: %v", err)
 				return err
 			}
+			if strings.TrimSpace(diff) == "" || !strings.Contains(diff, "diff --git") {
+				if useDeltaDiff {
+					log.Warnf("Delta diff empty for PR #%d; falling back to full PR diff", pullRequest.ID)
+					diff, err = ar.Bitbucket.FetchPullRequestDiff(pullRequest.ID, auto.Workspace, auto.RepoSlug, auto.Username, auto.AppPassword)
+					if err != nil {
+						log.Errorf("Error fetching fallback full diff: %v", err)
+						return err
+					}
+				}
+				if strings.TrimSpace(diff) == "" {
+					log.Warnf("PR #%d diff is empty after fallback; skipping review", pullRequest.ID)
+					continue
+				}
+			}
 
-			if !hasSummary {
+			if !hasSummary || (hasNewCommits && latestCommitHash != "") {
 				// STEP 1: Check and post summary comment if it doesn't exist
-				_, _ = ar.PostSummaryComment(&auto, &pullRequest, diff)
+				_, _ = ar.PostSummaryComment(&auto, &pullRequest, diff, lastReviewedHash, latestCommitHash)
 			} else {
 				log.Infof("Summary already exists for PR #%d, skipping", pullRequest.ID)
 			}
 
 			// STEP 2: Check and post inline review comments if they don't exist (delegated)
-			_, _ = ar.ensureInlineReviewComments(&auto, &pullRequest, diff, existingInlineComments, skipInlineByDisplayName, hasInlineReview)
+			skipInlineDueToExisting := hasInlineReview && !hasNewCommits
+			_, _ = ar.ensureInlineReviewComments(&auto, &pullRequest, diff, existingInlineComments, skipInlineByDisplayName, skipInlineDueToExisting, len(comments))
 		}
 
 		duration := time.Since(startTime)
@@ -195,210 +302,4 @@ func (ar *AutoReviewPRHandler) HandlerAutoReviewPR() {
 		}
 	}
 	s.Start()
-}
-
-// looksLikeCommand checks if the comment body looks like a shell command or user command
-func looksLikeCommand(body string) bool {
-	// Add more sophisticated checks as needed
-	commandIndicators := []string{"$", "#!/bin/", "sudo ", "rm ", "ls ", "cd ", "echo ", "cat ", "touch ", "mkdir ", "curl ", "wget ", "python ", "go run", "npm ", "yarn ", "git ", "exit", "shutdown", "reboot"}
-	for _, indicator := range commandIndicators {
-		if len(body) >= len(indicator) && body[:len(indicator)] == indicator {
-			return true
-		}
-	}
-	return false
-}
-
-// buildDiffSnippetAndLineMap flattens hunks for the AI prompt and builds a mapping
-// from snippet index (1-based in AI output) to destination file line (to-line).
-// For lines not present on destination (deleted '-' lines), the map value is <= 0.
-func buildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []int) {
-	var snippet []string
-	var toLineMap []int
-	for _, h := range hunks {
-		header, _ := h["header"].(string)
-		lines, _ := h["lines"].([]string)
-		// Parse header like: @@ -a,b +c,d @@
-		// Extract c (start line on destination)
-		destStart := 0
-		if parts := strings.Split(header, "+"); len(parts) > 1 {
-			// parts[1] like: c,d @@ ...
-			right := parts[1]
-			// trim up to first space or '@'
-			if idx := strings.IndexAny(right, " @"); idx >= 0 {
-				right = right[:idx]
-			}
-			if idx := strings.Index(right, ","); idx >= 0 {
-				right = right[:idx]
-			}
-			if v, err := strconv.Atoi(strings.TrimSpace(right)); err == nil {
-				destStart = v
-			}
-		}
-		destLine := destStart
-		for _, ln := range lines {
-			snippet = append(snippet, ln)
-			if strings.HasPrefix(ln, "+") || (!strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "-")) {
-				// added or context line advances destination
-				if strings.HasPrefix(ln, "+") {
-					toLineMap = append(toLineMap, destLine)
-					destLine++
-				} else {
-					// context line
-					toLineMap = append(toLineMap, destLine)
-					destLine++
-				}
-			} else if strings.HasPrefix(ln, "-") {
-				// removed line: no destination line
-				toLineMap = append(toLineMap, -1)
-			} else {
-				toLineMap = append(toLineMap, -1)
-			}
-		}
-	}
-	return snippet, toLineMap
-}
-
-// nearestMatchingLineIndex finds the nearest index in diffLines whose content contains the anchor.
-// It searches first at the hinted index, then walks outward.
-func nearestMatchingLineIndex(diffLines []string, anchor string, hintIdx int) int {
-	if len(diffLines) == 0 || anchor == "" {
-		return -1
-	}
-	// Normalize anchor for comparison (trim and remove leading +/- for robustness)
-	normAnchor := strings.TrimSpace(anchor)
-	strip := func(s string) string {
-		s = strings.TrimSpace(s)
-		if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
-			return strings.TrimSpace(s[1:])
-		}
-		return s
-	}
-	normAnchor = strip(normAnchor)
-
-	inBounds := func(i int) bool { return i >= 0 && i < len(diffLines) }
-	match := func(i int) bool {
-		line := strip(diffLines[i])
-		return strings.Contains(line, normAnchor)
-	}
-
-	// Clamp hint
-	if hintIdx < 0 {
-		hintIdx = 0
-	}
-	if hintIdx >= len(diffLines) {
-		hintIdx = len(diffLines) - 1
-	}
-	// Check hint position first
-	if inBounds(hintIdx) && match(hintIdx) {
-		return hintIdx
-	}
-	// Expand search radius
-	for radius := 1; radius < len(diffLines); radius++ {
-		l := hintIdx - radius
-		r := hintIdx + radius
-		if inBounds(l) && match(l) {
-			return l
-		}
-		if inBounds(r) && match(r) {
-			return r
-		}
-	}
-	return -1
-}
-
-// formatReviewBody enforces proper markdown formatting with paragraph breaks for better rendering
-func formatReviewBody(body string) string {
-	if body == "" {
-		return body
-	}
-
-	// List of headings that should start on new paragraphs
-	headings := []string{
-		"Why:",
-		"How (step-by-step):",
-		"Suggested change (Before/After):",
-		"Notes:",
-	}
-
-	formatted := body
-
-	// Use double newlines for proper markdown paragraph breaks
-	for _, heading := range headings {
-		// Replace " Heading:" with proper paragraph break
-		spacedHeading := " " + heading
-		properHeading := "\n\n" + heading
-		formatted = strings.ReplaceAll(formatted, spacedHeading, properHeading)
-
-		// Handle cases where heading appears without preceding space
-		// but avoid double-replacing already formatted headings
-		if !strings.Contains(formatted, properHeading) {
-			formatted = strings.ReplaceAll(formatted, heading, properHeading)
-		}
-	}
-
-	// Clean up excessive newlines (more than 2 consecutive)
-	for strings.Contains(formatted, "\n\n\n") {
-		formatted = strings.ReplaceAll(formatted, "\n\n\n", "\n\n")
-	}
-
-	// Remove leading newlines if they exist
-	formatted = strings.TrimLeft(formatted, "\n")
-
-	// Ensure proper spacing after colons and before bullets
-	formatted = strings.ReplaceAll(formatted, ":\n  -", ":\n\n  -")
-	formatted = strings.ReplaceAll(formatted, ":\n-", ":\n\n-")
-
-	// Improve code block formatting with proper spacing
-	formatted = strings.ReplaceAll(formatted, "~~~go\n//", "~~~go\n\n//")
-	formatted = strings.ReplaceAll(formatted, "~~~\n~~~", "~~~\n\n~~~")
-
-	// Ensure proper spacing around code blocks
-	formatted = strings.ReplaceAll(formatted, "):\n~~~", "):\n\n~~~")
-
-	return formatted
-}
-
-// formatSummaryBody enforces newlines around headers and bullets for PR summary
-func formatSummaryBody(body string) string {
-	if body == "" {
-		return body
-	}
-	formatted := strings.ReplaceAll(body, "\r\n", "\n")
-	headers := []string{
-		"**New Features**",
-		"**Bug Fixes**",
-		"**Documentation**",
-		"**Refactor**",
-		"**Performance**",
-		"**Tests**",
-		"**Chores**",
-	}
-	// Ensure each header stands alone and followed by a blank line
-	for _, h := range headers {
-		// cases like "**Header** -" or "**Header**-" -> header + blank line + "-"
-		formatted = strings.ReplaceAll(formatted, h+" - ", h+"\n\n- ")
-		formatted = strings.ReplaceAll(formatted, h+"- ", h+"\n\n- ")
-		formatted = strings.ReplaceAll(formatted, h+" -", h+"\n\n- ")
-		// if header is followed immediately by text, force newline
-		formatted = strings.ReplaceAll(formatted, h+" ", h+"\n\n")
-	}
-	// Handle plain (non-bold) headers that AI may emit like "New Features - ..."
-	plain := []string{"New Features", "Bug Fixes", "Documentation", "Refactor", "Performance", "Tests", "Chores"}
-	for _, h := range plain {
-		// Convert inline header+bullet to bold header on its own line then bullet list
-		formatted = strings.ReplaceAll(formatted, h+" - ", "**"+h+"**\n\n- ")
-		formatted = strings.ReplaceAll(formatted, h+"- ", "**"+h+"**\n\n- ")
-		formatted = strings.ReplaceAll(formatted, h+": - ", "**"+h+"**\n\n- ")
-		formatted = strings.ReplaceAll(formatted, h+": ", "**"+h+"**\n\n")
-		// If header followed by text without dash, still break line
-		formatted = strings.ReplaceAll(formatted, h+" ", "**"+h+"**\n\n")
-	}
-	// Convert inline bullet separators " - " to real newlines
-	formatted = strings.ReplaceAll(formatted, " - ", "\n- ")
-	// Collapse triple blank lines
-	for strings.Contains(formatted, "\n\n\n") {
-		formatted = strings.ReplaceAll(formatted, "\n\n\n", "\n\n")
-	}
-	return formatted
 }

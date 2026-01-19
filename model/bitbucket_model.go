@@ -27,3 +27,8 @@ type PullRequestComment struct {
 		To   int    `json:"to"`   // Line number for inline comments
 	} `json:"inline,omitempty"` // Only present for inline comments
 }
+
+type PullRequestCommit struct {
+	Hash string `json:"hash"`
+	Date string `json:"date"`
+}
