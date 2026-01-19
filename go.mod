@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.10
 
 require (
-	github.com/go-co-op/gocron/v2 v2.18.0
+	github.com/go-co-op/gocron/v2 v2.19.0
 	github.com/labstack/echo/v4 v4.13.4
 	github.com/labstack/gommon v0.4.2
 	github.com/mrnim94/file-rotatelogs v2.4.0+incompatible
