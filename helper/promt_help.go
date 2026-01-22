@@ -84,7 +84,7 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
 
 - Review the unified diff for file "%s" below. The lineNumber refers to the 1-based index of the displayed diff lines (including context and +/- lines). Do not use absolute file line numbers. Also include the exact line text (lineText) you are referring to from the diff to help anchor placement.
 - Your reviewComment must be actionable like CodeRabbit. Use this structure:
-  [<Type: Potential issue|Refactor|Nitpick>] [<Severity: Critical|Major|Minor|Trivial>]
+  [<Type: Potential issue|Refactor|Nitpick>] [<Severity: Critical|Major|Minor|Trivial|Info>]
   <Short title in one sentence>
   Why:
     - <1-2 bullets on reasoning/risks>
@@ -131,6 +131,7 @@ func CreatePrompt(filePath string, hunkLines []string, pr *model.PullRequest) st
 - Use clear, concise GitHub Markdown in your comments.
 - ONLY provide feedback if improvements are necessary; if the code is optimal, return an empty "reviews" array.
 - IMPORTANT: Do NOT suggest adding comments to the code.
+- IMPORTANT: Do NOT suggest adding a trailing newline at the end of file. This is a trivial formatting issue handled by editors/linters and does not need review feedback.
 - Assess whether the changes align with the pull request's title and description.
 - If the PR is too large, suggest breaking it down; if very small, ensure the change is meaningful.
 - If the diff is overly extensive, explicitly mention that it's too large for effective review.
