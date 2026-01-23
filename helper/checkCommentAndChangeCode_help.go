@@ -17,22 +17,41 @@ func LooksLikeCommand(body string) bool {
 	return false
 }
 
+// DiffLineMapping holds both source (from) and destination (to) line numbers for a diff line
+type DiffLineMapping struct {
+	FromLine int // Line number in the old/source file (-1 for added lines)
+	ToLine   int // Line number in the new/destination file (-1 for deleted lines)
+}
+
 // BuildDiffSnippetAndLineMap flattens hunks for the AI prompt and builds a mapping
-// from snippet index (1-based in AI output) to destination file line (to-line).
-// For lines not present on destination (deleted '-' lines), the map value is <= 0.
-func BuildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []int) {
+// from snippet index (1-based in AI output) to both source and destination file lines.
+// For lines not present on destination (deleted '-' lines), ToLine is -1.
+// For lines not present on source (added '+' lines), FromLine is -1.
+func BuildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []DiffLineMapping) {
 	var snippet []string
-	var toLineMap []int
+	var lineMap []DiffLineMapping
 	for _, h := range hunks {
 		header, _ := h["header"].(string)
 		lines, _ := h["lines"].([]string)
 		// Parse header like: @@ -a,b +c,d @@
-		// Extract c (start line on destination)
+		// Extract a (start line on source) and c (start line on destination)
+		srcStart := 0
 		destStart := 0
+
+		// Parse source start line from "-a,b" part
+		if parts := strings.Split(header, "-"); len(parts) > 1 {
+			left := parts[1]
+			if idx := strings.IndexAny(left, " ,+@"); idx >= 0 {
+				left = left[:idx]
+			}
+			if v, err := strconv.Atoi(strings.TrimSpace(left)); err == nil {
+				srcStart = v
+			}
+		}
+
+		// Parse destination start line from "+c,d" part
 		if parts := strings.Split(header, "+"); len(parts) > 1 {
-			// parts[1] like: c,d @@ ...
 			right := parts[1]
-			// trim up to first space or '@'
 			if idx := strings.IndexAny(right, " @"); idx >= 0 {
 				right = right[:idx]
 			}
@@ -43,28 +62,28 @@ func BuildDiffSnippetAndLineMap(hunks []map[string]interface{}) ([]string, []int
 				destStart = v
 			}
 		}
+
+		srcLine := srcStart
 		destLine := destStart
 		for _, ln := range lines {
 			snippet = append(snippet, ln)
-			if strings.HasPrefix(ln, "+") || (!strings.HasPrefix(ln, "+") && !strings.HasPrefix(ln, "-")) {
-				// added or context line advances destination
-				if strings.HasPrefix(ln, "+") {
-					toLineMap = append(toLineMap, destLine)
-					destLine++
-				} else {
-					// context line
-					toLineMap = append(toLineMap, destLine)
-					destLine++
-				}
+			if strings.HasPrefix(ln, "+") {
+				// Added line: exists only in destination
+				lineMap = append(lineMap, DiffLineMapping{FromLine: -1, ToLine: destLine})
+				destLine++
 			} else if strings.HasPrefix(ln, "-") {
-				// removed line: no destination line
-				toLineMap = append(toLineMap, -1)
+				// Deleted line: exists only in source
+				lineMap = append(lineMap, DiffLineMapping{FromLine: srcLine, ToLine: -1})
+				srcLine++
 			} else {
-				toLineMap = append(toLineMap, -1)
+				// Context line: exists in both source and destination
+				lineMap = append(lineMap, DiffLineMapping{FromLine: srcLine, ToLine: destLine})
+				srcLine++
+				destLine++
 			}
 		}
 	}
-	return snippet, toLineMap
+	return snippet, lineMap
 }
 
 // FormatSummaryBody enforces newlines around headers and bullets for PR summary

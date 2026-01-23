@@ -308,19 +308,33 @@ func (hc *HttpClient) PushPullRequestComment(prID int, workspace, repoSlug, user
 	return nil
 }
 
-// PushPullRequestInlineComment posts a comment on a specific file and destination line in the PR
-func (hc *HttpClient) PushPullRequestInlineComment(prID int, workspace, repoSlug, username, appPassword, path string, line int, content string) error {
+// PushPullRequestInlineComment posts a comment on a specific file and line in the PR
+// fromLine is the line number in the old/source file (use 0 for added lines)
+// toLine is the line number in the new/destination file (use 0 for deleted lines)
+func (hc *HttpClient) PushPullRequestInlineComment(prID int, workspace, repoSlug, username, appPassword, path string, fromLine, toLine int, content string) error {
 	apiURL := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/comments", workspace, repoSlug, prID)
-	log.Debugf("Posting inline comment to URL: %s", apiURL)
+	log.Debugf("Posting inline comment to URL: %s (path=%s, from=%d, to=%d)", apiURL, path, fromLine, toLine)
+
+	// Build inline object with from and/or to based on line type
+	inlineObj := map[string]interface{}{
+		"path": path,
+	}
+
+	// For added lines (fromLine <= 0), only include "to"
+	// For deleted lines (toLine <= 0), only include "from"
+	// For context lines, include both
+	if fromLine > 0 {
+		inlineObj["from"] = fromLine
+	}
+	if toLine > 0 {
+		inlineObj["to"] = toLine
+	}
 
 	payload := map[string]interface{}{
 		"content": map[string]string{
 			"raw": content,
 		},
-		"inline": map[string]interface{}{
-			"path": path,
-			"to":   line, // destination line in the diff
-		},
+		"inline": inlineObj,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

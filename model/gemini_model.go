@@ -3,7 +3,8 @@ package model
 type ReviewComment struct {
 	Body     string `json:"body"`
 	Path     string `json:"path"`
-	Position int    `json:"position"`
+	Position int    `json:"position"` // "to" line in destination/new file
+	FromLine int    `json:"fromLine"` // "from" line in source/old file (0 or -1 for added lines)
 	Anchor   string `json:"anchor,omitempty"`
 }
 

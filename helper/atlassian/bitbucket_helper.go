@@ -12,7 +12,8 @@ type Bitbucket interface {
 	ParseDiff(diff string) []map[string]interface{}
 	FetchPullRequestComments(prID int, workspace, repoSlug, username, appPassword string) ([]model.PullRequestComment, error)
 	PushPullRequestComment(prID int, workspace, repoSlug, username, appPassword, commentText string) error
-	// PushPullRequestInlineComment posts a comment on a specific file and destination line in the PR
-	// Bitbucket Cloud API expects the path and line (destination side by default)
-	PushPullRequestInlineComment(prID int, workspace, repoSlug, username, appPassword, path string, line int, content string) error
+	// PushPullRequestInlineComment posts a comment on a specific file and line in the PR
+	// Bitbucket Cloud API expects the path, fromLine (source/old file), and toLine (destination/new file)
+	// For added lines, fromLine should be 0; for deleted lines, toLine should be 0
+	PushPullRequestInlineComment(prID int, workspace, repoSlug, username, appPassword, path string, fromLine, toLine int, content string) error
 }
