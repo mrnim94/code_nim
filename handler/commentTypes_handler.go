@@ -120,7 +120,7 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 		filePath := file["path"].(string)
 		log.Debugf("Check File path %s", filePath)
 		hunks := file["hunks"].([]map[string]interface{})
-		allLines, toLineMap := helper.BuildDiffSnippetAndLineMap(hunks)
+		allLines, lineMap := helper.BuildDiffSnippetAndLineMap(hunks)
 		if len(allLines) == 0 {
 			emptySnippet++
 			log.Infof("Posted 0 inline comments for file %s (emptyDiffSnippet)", filePath)
@@ -150,21 +150,21 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 			// Use anchor text to correct the index if present
 			if comments[i].Anchor != "" {
 				idx := helper.NearestMatchingLineIndex(allLines, comments[i].Anchor, comments[i].Position-1)
-				if idx >= 0 && idx < len(toLineMap) {
+				if idx >= 0 && idx < len(lineMap) {
 					comments[i].Position = idx + 1
 				}
 			}
-			// Map AI diff index (1-based within provided snippet) to destination file line
-			if comments[i].Position <= 0 || comments[i].Position > len(toLineMap) {
+			// Map AI diff index (1-based within provided snippet) to file lines
+			if comments[i].Position <= 0 || comments[i].Position > len(lineMap) {
 				log.Debugf("Skip comment with out-of-range position %d for file %s", comments[i].Position, filePath)
 				comments[i].Position = 0
 				fileOutOfRange++
 				outOfRange++
 				continue
 			}
-			mapped := toLineMap[comments[i].Position-1]
-			if mapped <= 0 {
-				// Deleted lines have no destination; skip
+			mapping := lineMap[comments[i].Position-1]
+			if mapping.ToLine <= 0 {
+				// Deleted lines have no destination; skip commenting on them
 				log.Debugf("Skip comment on deleted line (no destination) at diff idx %d for file %s", comments[i].Position, filePath)
 				comments[i].Position = 0
 				fileDeleted++
@@ -172,7 +172,8 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 				continue
 			}
 			comments[i].Path = filePath
-			comments[i].Position = mapped
+			comments[i].Position = mapping.ToLine   // destination/new file line
+			comments[i].FromLine = mapping.FromLine // source/old file line (-1 for added lines)
 		}
 
 		for _, c := range comments {
@@ -208,6 +209,11 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 			if !strings.Contains(formattedBody, reviewBotMarker) {
 				formattedBody = formattedBody + "\n\n" + reviewBotMarker
 			}
+			// Convert FromLine: -1 means added line (no source), use 0 for API
+			fromLineForAPI := c.FromLine
+			if fromLineForAPI < 0 {
+				fromLineForAPI = 0
+			}
 			err := ar.Bitbucket.PushPullRequestInlineComment(
 				pr.ID,
 				auto.Workspace,
@@ -215,13 +221,14 @@ func (ar *AutoReviewPRHandler) ensureInlineReviewComments(
 				auto.Username,
 				auto.AppPassword,
 				c.Path,
-				c.Position,
+				fromLineForAPI, // from line in old/source file
+				c.Position,     // to line in new/destination file
 				formattedBody,
 			)
 			if err != nil {
 				log.Errorf("Failed to post inline comment: %v", err)
 			} else {
-				log.Debugf("✓ Posted inline comment on %s at line %d", c.Path, c.Position)
+				log.Debugf("✓ Posted inline comment on %s at line %d (from=%d, to=%d)", c.Path, c.Position, fromLineForAPI, c.Position)
 				postedCount++
 				filePosted++
 				existingInlineComments[key] = true
